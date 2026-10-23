@@ -1,0 +1,26 @@
+# Build and execution artifacts
+bin/
+obj/
+*.user
+*.suo
+
+# Output directory (job runs and artifacts)
+output/
+uploads/
+
+# Frontend (has its own .gitignore too, but belt-and-braces for the common ones)
+frontend/node_modules/
+frontend/dist/
+
+# Local configuration and credentials
+appsettings.Development.json
+appsettings.Local.json
+*.env
+.env
+
+# IDE and OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
