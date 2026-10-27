@@ -8,30 +8,38 @@ using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Persistence.Entities;
 using PixousDocIntelligence.Persistence.Repositories;
 using PixousDocIntelligence.Pipeline.Verification;
+using PixousDocIntelligence.Security;
+using PixousDocIntelligence.Services.Accounts;
 
 namespace PixousDocIntelligence.Controllers;
 
 /// <summary>
 /// Endpoints for ingesting, processing, and querying documents through the 7-phase intelligence pipeline.
+/// Accepts either an external integration's API key or a signed-in portal session (see
+/// <see cref="PortalAuthSchemes.Combined"/>) — the latter lets the Playground exercise these
+/// endpoints directly against the user's own account credit, with no API key required.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
-[Authorize]
+[Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined)]
 public class DocumentsController : ControllerBase
 {
     private readonly IDocumentProcessingOrchestrator _orchestrator;
     private readonly IDocumentProcessingRepository _repository;
     private readonly Credentials.ICredentialRegistry _credentialRegistry;
+    private readonly CustomerAccountService _accountService;
 
     public DocumentsController(
         IDocumentProcessingOrchestrator orchestrator,
         IDocumentProcessingRepository repository,
-        Credentials.ICredentialRegistry credentialRegistry)
+        Credentials.ICredentialRegistry credentialRegistry,
+        CustomerAccountService accountService)
     {
         _orchestrator = orchestrator;
         _repository = repository;
         _credentialRegistry = credentialRegistry;
+        _accountService = accountService;
     }
 
     /// <summary>
@@ -43,7 +51,7 @@ public class DocumentsController : ControllerBase
     /// <returns>The consolidated execution result including verified field envelope, review tasks, and artifact references.</returns>
     [HttpPost("process")]
     [Consumes("multipart/form-data")]
-    [Authorize(Roles = "process,admin")]
+    [Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined, Roles = "process,admin")]
     [ProducesResponseType(typeof(DocumentProcessingResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -80,8 +88,21 @@ public class DocumentsController : ControllerBase
 
         try
         {
-            // 1. Derive tenant identity strictly from authenticated credential
-            string clientIdentifier = User.FindFirst("client_id")?.Value ?? upload.TenantId ?? "default-tenant";
+            // 1. Derive identity and billing source from whichever scheme authenticated this request:
+            //    - API key with no owning portal account (legacy/admin key): bill the key itself, as before.
+            //    - API key owned by a portal account (self-serve key): bill the ACCOUNT's shared credit pool.
+            //    - Portal session with no API key at all (Playground): bill that account directly.
+            string? clientId = User.FindFirst("client_id")?.Value;
+            string? sessionAccountId = User.FindFirst("account_id")?.Value;
+            string? billedAccountId = sessionAccountId;
+
+            if (clientId != null)
+            {
+                var credential = await _credentialRegistry.GetClientByIdAsync(clientId, cancellationToken);
+                billedAccountId = credential?.OwnerAccountId;
+            }
+
+            string clientIdentifier = clientId ?? sessionAccountId ?? upload.TenantId ?? "default-tenant";
 
             // 2. Pre-execution quota validation
             int incomingPages = 1;
@@ -92,7 +113,18 @@ public class DocumentsController : ControllerBase
             }
             catch { /* fallback to 1 page if probe fails */ }
 
-            var (quotaAllowed, remainingBefore, quotaMsg) = await _credentialRegistry.CheckQuotaAsync(clientIdentifier, incomingPages, cancellationToken);
+            bool quotaAllowed;
+            int remainingBefore;
+            string quotaMsg;
+            if (billedAccountId != null)
+            {
+                (quotaAllowed, remainingBefore, quotaMsg) = await _accountService.CheckCreditAsync(billedAccountId, incomingPages, cancellationToken);
+            }
+            else
+            {
+                (quotaAllowed, remainingBefore, quotaMsg) = await _credentialRegistry.CheckQuotaAsync(clientIdentifier, incomingPages, cancellationToken);
+            }
+
             if (!quotaAllowed)
             {
                 return StatusCode(StatusCodes.Status429TooManyRequests, new
@@ -117,9 +149,22 @@ public class DocumentsController : ControllerBase
 
             var result = await _orchestrator.ProcessDocumentAsync(request, cancellationToken: cancellationToken);
 
-            // 3. Atomically record usage in the credential registry
+            // 3. Record usage: the account's shared pool is the actual enforcement ledger whenever
+            //    one applies; the key's own counters (when a key was used) are kept purely for its
+            //    own "pages used" display in API Access/Overview, not for gating.
             int actualPages = result.Manifest.TotalPages > 0 ? result.Manifest.TotalPages : incomingPages;
-            await _credentialRegistry.RecordUsageAsync(clientIdentifier, actualPages, "document_process", cancellationToken);
+            if (billedAccountId != null)
+            {
+                await _accountService.RecordCreditUsageAsync(billedAccountId, actualPages, cancellationToken);
+                if (clientId != null)
+                {
+                    await _credentialRegistry.RecordUsageAsync(clientId, actualPages, "document_process", cancellationToken);
+                }
+            }
+            else
+            {
+                await _credentialRegistry.RecordUsageAsync(clientIdentifier, actualPages, "document_process", cancellationToken);
+            }
 
             // 4. Attach enterprise response headers
             int remainingAfter = Math.Max(0, remainingBefore - actualPages);

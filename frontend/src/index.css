@@ -1,12 +1,20 @@
 @import "tailwindcss";
 
+@theme {
+  --color-navy: #17243b;
+  --color-navy-dark: #0f1829;
+  --color-app-bg: #f5f7fa;
+  --color-border-subtle: #dce5f0;
+}
+
 :root {
   color-scheme: light;
 }
 
 body {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-color: #f5f7fa;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 code, pre {

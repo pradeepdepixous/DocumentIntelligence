@@ -2,13 +2,15 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PixousDocIntelligence.Credentials;
 using PixousDocIntelligence.Security;
+using PixousDocIntelligence.Services.Accounts;
 
 namespace PixousDocIntelligence.Controllers;
 
 /// <summary>
-/// Usage summary for a signed-in portal customer, aggregated across every API key they own
-/// (an account can have several keys/apps). Distinct from UsageController.GetMyUsage, which
-/// reports on a single API key via the ApiKeyScheme, not a whole portal account via a JWT.
+/// Usage summary for a signed-in portal customer: the account's shared credit pool (the real
+/// enforcement limit — spent by Playground testing and every self-serve key alike), plus a
+/// per-key breakdown for display. Distinct from UsageController.GetMyUsage, which reports on a
+/// single API key via the ApiKeyScheme, not a whole portal account via a JWT.
 /// </summary>
 [ApiController]
 [Route("api/my/usage")]
@@ -17,10 +19,12 @@ namespace PixousDocIntelligence.Controllers;
 public class MyUsageController : ControllerBase
 {
     private readonly ICredentialRegistry _credentialRegistry;
+    private readonly CustomerAccountService _accountService;
 
-    public MyUsageController(ICredentialRegistry credentialRegistry)
+    public MyUsageController(ICredentialRegistry credentialRegistry, CustomerAccountService accountService)
     {
         _credentialRegistry = credentialRegistry;
+        _accountService = accountService;
     }
 
     [HttpGet]
@@ -33,13 +37,25 @@ public class MyUsageController : ControllerBase
             return Unauthorized(new { error = "Unable to determine portal account from session." });
         }
 
+        var account = await _accountService.GetByIdAsync(accountId, cancellationToken);
+        if (account == null)
+        {
+            return NotFound(new { error = $"Account '{accountId}' not found." });
+        }
+
         var keys = await _credentialRegistry.ListKeysByOwnerAsync(accountId, cancellationToken);
 
         return Ok(new
         {
+            credit = new
+            {
+                credit_limit = account.CreditLimit,
+                credits_used = account.CreditsUsed,
+                credits_remaining = Math.Max(0, account.CreditLimit - account.CreditsUsed),
+                billing_cycle = account.BillingCycle
+            },
             total_keys = keys.Count,
             active_keys = keys.Count(k => k.IsActive),
-            total_pages_used_this_cycle = keys.Sum(k => k.PagesUsedThisMonth),
             total_requests = keys.Sum(k => k.TotalRequests),
             keys = keys.Select(k => new
             {
@@ -48,10 +64,7 @@ public class MyUsageController : ControllerBase
                 key_prefix = k.KeyPrefix,
                 permissions = k.Permissions,
                 is_active = k.IsActive,
-                plan_tier = k.PlanTier,
-                monthly_page_quota = k.MonthlyPageQuota,
                 pages_used_this_month = k.PagesUsedThisMonth,
-                pages_remaining = Math.Max(0, k.MonthlyPageQuota - k.PagesUsedThisMonth),
                 total_requests = k.TotalRequests,
                 last_used_at = k.LastUsedAt
             })

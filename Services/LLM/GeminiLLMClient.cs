@@ -26,7 +26,7 @@ public class GeminiLLMClient : ILLMClient
 
         _apiKey = apiKey.Trim();
         _modelName = LLMClientFactory.NormalizeGeminiModel(modelName);
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _httpClient = httpClient ?? Common.FastHttpClientHelper.CreateClient(TimeSpan.FromMinutes(10));
     }
 
     public async Task<string> GenerateContentAsync(

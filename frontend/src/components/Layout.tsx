@@ -1,53 +1,88 @@
+import { useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import pixousLogo from "../assets/pixous-logo.png";
 
 const navItemClass = ({ isActive }: { isActive: boolean }) =>
-  `px-3 py-2 text-sm font-medium rounded-md ${
-    isActive ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-100"
+  `px-3 py-1.5 text-sm font-medium rounded-md ${
+    isActive ? "bg-navy text-white" : "text-gray-600 hover:bg-gray-100"
   }`;
 
-export default function Layout() {
-  const { account, isAdmin, logout } = useAuth();
+function ProfileMenu() {
+  const { account, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const initials = (account?.email ?? "?").slice(0, 2).toUpperCase();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="border-b border-gray-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            {account?.picture_url && (
-              <img src={account.picture_url} alt="" className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" />
-            )}
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900">Pixous Document Intelligence</h1>
-              {account && <p className="text-xs text-gray-500">{account.email}</p>}
-            </div>
-          </div>
-          <button onClick={logout} className="text-sm text-gray-500 hover:text-gray-900">
-            Logout
+    <div className="relative" ref={containerRef}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className="flex items-center gap-2 rounded-full border border-transparent py-1 pl-1 pr-2.5 hover:border-border-subtle"
+      >
+        {account?.picture_url ? (
+          <img src={account.picture_url} alt="" className="h-7 w-7 rounded-full" referrerPolicy="no-referrer" />
+        ) : (
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-navy text-[10px] font-semibold text-white">
+            {initials}
+          </span>
+        )}
+        <span className="hidden text-sm font-medium text-gray-700 sm:inline">{account?.name || account?.email}</span>
+        <span className="text-xs text-gray-400">▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-10 mt-1 w-52 rounded-lg border border-border-subtle bg-white py-1 shadow-lg">
+          <p className="truncate px-3 py-2 text-xs text-gray-500">{account?.email}</p>
+          <div className="my-1 h-px bg-border-subtle" />
+          <button onClick={logout} className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
+            Log out
           </button>
         </div>
-        <nav className="mx-auto flex max-w-6xl gap-1 px-6 pb-3">
-          <NavLink to="/" end className={navItemClass}>
-            Overview
-          </NavLink>
-          <NavLink to="/api-access" className={navItemClass}>
-            API Access
-          </NavLink>
-          <NavLink to="/playground" className={navItemClass}>
-            Playground
-          </NavLink>
-          <NavLink to="/docs" className={navItemClass}>
-            API Docs
-          </NavLink>
-          {isAdmin && (
-            <NavLink to="/admin" className={navItemClass}>
-              Admin
+      )}
+    </div>
+  );
+}
+
+export default function Layout() {
+  const { isAdmin } = useAuth();
+
+  return (
+    <div className="min-h-screen bg-app-bg">
+      <header className="border-b border-border-subtle bg-white">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-6 py-2.5">
+          <div className="flex shrink-0 items-center gap-2">
+            <img src={pixousLogo} alt="Pixous Technologies" className="h-6 w-auto" />
+            <span className="hidden text-sm font-semibold text-navy md:inline">Document Intelligence</span>
+          </div>
+
+          <nav className="flex gap-1">
+            <NavLink to="/dashboard" end className={navItemClass}>
+              Overview
             </NavLink>
-          )}
-        </nav>
+            <NavLink to="/api-access" className={navItemClass}>
+              API Access
+            </NavLink>
+            <NavLink to="/playground" className={navItemClass}>
+              Playground
+            </NavLink>
+            <NavLink to="/docs" className={navItemClass}>
+              API Docs
+            </NavLink>
+            {isAdmin && (
+              <NavLink to="/admin" className={navItemClass}>
+                Admin
+              </NavLink>
+            )}
+          </nav>
+
+          <ProfileMenu />
+        </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1500px] px-6 py-6">
         <Outlet />
       </main>
     </div>

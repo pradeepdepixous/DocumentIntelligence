@@ -180,6 +180,7 @@ export default function ApiAccess() {
               ))}
             </tbody>
           </table>
+          {credentials === null && !error && <p className="py-4 text-sm text-gray-400">Loading keys...</p>}
           {credentials?.length === 0 && <p className="py-4 text-sm text-gray-400">No API keys yet.</p>}
         </div>
       </div>

@@ -92,11 +92,12 @@ public class Program
         builder.Services.AddSingleton<PixousDocIntelligence.Security.PortalJwtTokenService>();
         builder.Services.AddScoped<PixousDocIntelligence.Services.Accounts.CustomerAccountService>();
 
-        // 2. Register core pipeline services & LLM Client Factory (10-minute timeout for multi-batch processing)
+        // 2. Register core pipeline services & LLM Client Factory (10-minute timeout for multi-batch processing, fast IPv4 connect)
         builder.Services.AddHttpClient(Microsoft.Extensions.Options.Options.DefaultName, client =>
         {
             client.Timeout = TimeSpan.FromMinutes(10);
-        });
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => PixousDocIntelligence.Common.FastHttpClientHelper.CreateFastSocketsHandler());
         builder.Services.AddSingleton<PixousDocIntelligence.Credentials.ICredentialRegistry>(sp => 
             new PixousDocIntelligence.Credentials.JsonFileCredentialRegistry(
                 processingOptions.Storage.OutputBaseDirectory,
@@ -291,6 +292,20 @@ public class Program
                         CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_accounts_google_subject ON customer_accounts (google_subject);
                         CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_accounts_email ON customer_accounts (email);
                     ");
+
+                    // Credit columns in a separate statement so the default (sourced from config,
+                    // not a literal) backfills existing accounts created before this feature existed.
+                    // Can't use the auto-parameterizing ExecuteSql here: Postgres doesn't allow bind
+                    // parameters inside a DDL DEFAULT clause. Safe regardless — the interpolated value
+                    // is a strongly-typed `int` from server config, not user input, and an int cannot
+                    // carry SQL syntax.
+#pragma warning disable EF1002
+                    db.Database.ExecuteSqlRaw($@"
+                        ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS credit_limit INT NOT NULL DEFAULT {portalAuthOptions.DefaultAccountCreditLimit};
+                        ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS credits_used INT NOT NULL DEFAULT 0;
+                        ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM');
+                    ");
+#pragma warning restore EF1002
 
                     Console.WriteLine("📦 PostgreSQL schema verified and active.");
                 }

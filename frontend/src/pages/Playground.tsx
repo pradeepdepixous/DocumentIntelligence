@@ -1,191 +1,191 @@
-import { useMemo, useState } from "react";
-import { ENDPOINTS, extractPathParams, buildPath } from "../lib/endpoints";
-import { rawApiRequest, type RawApiResult, getTestApiKey, setTestApiKey } from "../lib/apiClient";
+import { useState, type DragEvent } from "react";
+import { apiFetch, ApiError } from "../lib/apiClient";
+import type { DocumentProcessingResult } from "../lib/documentTypes";
+import DocumentHeader from "../components/DocumentHeader";
+import DocumentOverview from "../components/DocumentOverview";
+import ReviewQueueList from "../components/ReviewQueueList";
+import DocumentWorkspace from "../components/DocumentWorkspace";
+import AdvancedApiConsole from "../components/AdvancedApiConsole";
+
+const EXTRACTION_CATEGORIES = [
+  { icon: "📅", label: "Dates & Deadlines", description: "Effective dates, milestones, expirations" },
+  { icon: "👤", label: "Parties & Contacts", description: "Names, companies, emails, addresses" },
+  { icon: "💰", label: "Financial Terms", description: "Amounts, fees, payment schedules" },
+  { icon: "📊", label: "Tables", description: "Line items, schedules, pricing grids" },
+  { icon: "📋", label: "Clauses & Terms", description: "Governing law, liability, renewal terms" },
+  { icon: "🔍", label: "Anything else notable", description: "Discovered automatically, even if unexpected" },
+];
+
+type Status = "idle" | "analyzing" | "done" | "error";
 
 export default function Playground() {
-  const [testKey, setTestKeyState] = useState(getTestApiKey() ?? "");
-  const [endpointId, setEndpointId] = useState(ENDPOINTS[0].id);
-  const [pathParams, setPathParams] = useState<Record<string, string>>({});
-  const [jsonBody, setJsonBody] = useState(ENDPOINTS[0].defaultBody ?? "");
   const [file, setFile] = useState<File | null>(null);
   const [instructions, setInstructions] = useState("");
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<RawApiResult | null>(null);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [status, setStatus] = useState<Status>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<DocumentProcessingResult | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const endpoint = useMemo(() => ENDPOINTS.find((e) => e.id === endpointId)!, [endpointId]);
-  const params = useMemo(() => extractPathParams(endpoint.path), [endpoint]);
-
-  function handleTestKeyChange(value: string) {
-    setTestKeyState(value);
-    setTestApiKey(value);
-  }
-
-  function selectEndpoint(id: string) {
-    const next = ENDPOINTS.find((e) => e.id === id)!;
-    setEndpointId(id);
-    setJsonBody(next.defaultBody ?? "");
-    setResult(null);
-    setSendError(null);
-  }
-
-  async function handleSend() {
-    setSending(true);
-    setSendError(null);
-    setResult(null);
-    try {
-      const path = buildPath(endpoint.path, pathParams);
-
-      if (endpoint.bodyType === "multipart") {
-        if (!file) {
-          setSendError("Choose a PDF file first.");
-          setSending(false);
-          return;
-        }
-        const form = new FormData();
-        form.append("File", file);
-        if (instructions.trim()) form.append("Instructions", instructions);
-        const res = await rawApiRequest(path, endpoint.method, { body: form });
-        setResult(res);
-        return;
-      }
-
-      if (endpoint.bodyType === "json") {
-        const res = await rawApiRequest(path, endpoint.method, { body: jsonBody, isJson: true });
-        setResult(res);
-        return;
-      }
-
-      const res = await rawApiRequest(path, endpoint.method);
-      setResult(res);
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : "Request failed");
-    } finally {
-      setSending(false);
+  function pickFile(f: File | null) {
+    if (f && f.type !== "application/pdf") {
+      setError("Please choose a PDF file.");
+      return;
     }
+    setFile(f);
+    setError(null);
+  }
+
+  function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragging(false);
+    pickFile(e.dataTransfer.files?.[0] ?? null);
+  }
+
+  async function handleAnalyze() {
+    if (!file) return;
+    setStatus("analyzing");
+    setError(null);
+    setResult(null);
+
+    try {
+      const form = new FormData();
+      form.append("File", file);
+      if (instructions.trim()) form.append("Instructions", instructions);
+      const data = await apiFetch<DocumentProcessingResult>("/documents/process", { method: "POST", body: form });
+      setResult(data);
+      setStatus("done");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        setError("You've used up your available credit for this billing cycle. Contact an admin to raise your limit.");
+      } else if (err instanceof ApiError && err.status === 400) {
+        setError(err.message || "We couldn't read this file. Please make sure it's a valid PDF.");
+      } else {
+        setError(err instanceof ApiError ? err.message : "Something went wrong while analyzing your document. Please try again.");
+      }
+      setStatus("error");
+    }
+  }
+
+  function startOver() {
+    setFile(null);
+    setInstructions("");
+    setStatus("idle");
+    setError(null);
+    setResult(null);
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold text-gray-900">Playground</h2>
-        <p className="text-sm text-gray-500">Try API requests directly from the browser.</p>
-      </div>
-
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <label className="block text-xs text-gray-500">Test API Key</label>
-        <input
-          value={testKey}
-          onChange={(e) => handleTestKeyChange(e.target.value)}
-          placeholder="pixous_..."
-          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm focus:border-gray-900 focus:outline-none"
-        />
-        <p className="mt-1 text-xs text-gray-400">
-          Paste one of your own API keys (from API Access) to call document-processing endpoints below. Your sign-in
-          session is separate and doesn't authenticate these calls.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5">
+      {status !== "done" && (
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <label className="block text-xs text-gray-500">Endpoint</label>
-            <select
-              value={endpointId}
-              onChange={(e) => selectEndpoint(e.target.value)}
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none"
+            <h2 className="text-xl font-semibold text-navy">Analyze a Document</h2>
+            <p className="text-sm text-gray-500">Upload a PDF and we'll pull out the key information — no setup needed.</p>
+          </div>
+          <button onClick={() => setShowAdvanced((v) => !v)} className="shrink-0 text-xs text-gray-400 hover:text-gray-600 hover:underline">
+            {showAdvanced ? "Hide advanced API console" : "Advanced: raw API console"}
+          </button>
+        </div>
+      )}
+
+      {showAdvanced && <AdvancedApiConsole />}
+
+      {!showAdvanced && status !== "done" && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="space-y-4 rounded-xl border border-border-subtle bg-white p-6 lg:col-span-2">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => document.getElementById("pdf-upload-input")?.click()}
+              className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 text-center transition ${
+                isDragging ? "border-navy bg-app-bg" : "border-border-subtle hover:border-gray-300"
+              }`}
             >
-              {ENDPOINTS.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.method} {e.path} — {e.description}
-                </option>
-              ))}
-            </select>
-            {endpoint.roles.length > 0 && (
-              <p className="mt-1 text-xs text-gray-400">Requires role: {endpoint.roles.join(" or ")}</p>
-            )}
+              <input
+                id="pdf-upload-input"
+                type="file"
+                accept="application/pdf"
+                className="hidden"
+                onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              />
+              {file ? (
+                <>
+                  <p className="text-3xl">📄</p>
+                  <p className="mt-2 text-sm font-medium text-gray-900">{file.name}</p>
+                  <p className="mt-1 text-xs text-gray-500">{(file.size / 1024 / 1024).toFixed(1)} MB — click to choose a different file</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-3xl">⬆️</p>
+                  <p className="mt-2 text-sm font-medium text-gray-900">Drop your PDF here, or click to browse</p>
+                  <p className="mt-1 text-xs text-gray-500">PDF files only, any length</p>
+                </>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-500">What would you like to find? (optional)</label>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                rows={2}
+                placeholder="e.g. Extract the contract dates, parties, and payment terms"
+                className="mt-1 w-full rounded-md border border-border-subtle px-3 py-2 text-sm focus:border-navy focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-gray-400">Leave this blank and we'll pull out everything important automatically.</p>
+            </div>
+
+            {error && <p className="text-sm text-red-600">{error}</p>}
+
+            <button
+              onClick={handleAnalyze}
+              disabled={!file || status === "analyzing"}
+              className="w-full rounded-lg bg-navy px-4 py-3 text-sm font-medium text-white transition hover:bg-navy-dark disabled:opacity-50"
+            >
+              {status === "analyzing" ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  Analyzing your document — this can take a minute...
+                </span>
+              ) : (
+                "Analyze Document"
+              )}
+            </button>
           </div>
 
-          {params.map((p) => (
-            <div key={p}>
-              <label className="block text-xs text-gray-500">{p}</label>
-              <input
-                value={pathParams[p] ?? ""}
-                onChange={(e) => setPathParams((prev) => ({ ...prev, [p]: e.target.value }))}
-                placeholder={`Enter ${p}`}
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-gray-900 focus:outline-none"
-              />
-            </div>
-          ))}
-
-          {endpoint.bodyType === "json" && (
-            <div>
-              <label className="block text-xs text-gray-500">Body (JSON)</label>
-              <textarea
-                value={jsonBody}
-                onChange={(e) => setJsonBody(e.target.value)}
-                rows={8}
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm focus:border-gray-900 focus:outline-none"
-              />
-            </div>
-          )}
-
-          {endpoint.bodyType === "multipart" && (
-            <>
-              <div>
-                <label className="block text-xs text-gray-500">PDF File</label>
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                  className="mt-1 w-full text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500">Instructions (optional)</label>
-                <textarea
-                  value={instructions}
-                  onChange={(e) => setInstructions(e.target.value)}
-                  rows={3}
-                  placeholder="Extract all critical business entities, dates, parties..."
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none"
-                />
-              </div>
-            </>
-          )}
-
-          <button
-            onClick={handleSend}
-            disabled={sending}
-            className="w-full rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-          >
-            {sending ? "Sending..." : "Send"}
-          </button>
-          {sendError && <p className="text-sm text-red-600">{sendError}</p>}
-        </div>
-
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <h3 className="text-sm font-semibold text-gray-900">Response</h3>
-          {!result && <p className="mt-3 text-sm text-gray-400">Send a request to see the response here.</p>}
-          {result && (
+          <div className="rounded-xl border border-border-subtle bg-white p-5">
+            <h3 className="text-sm font-semibold text-navy">What we'll pull out</h3>
             <div className="mt-3 space-y-3">
-              <div className="flex items-center gap-3 text-sm">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                    result.ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                  }`}
-                >
-                  {result.status} {result.statusText}
-                </span>
-                <span className="text-gray-400">{result.durationMs}ms</span>
-              </div>
-              <pre className="max-h-96 overflow-auto rounded-md bg-gray-900 p-3 text-xs text-gray-100">
-                {result.bodyIsText ? String(result.body) : JSON.stringify(result.body, null, 2)}
-              </pre>
+              {EXTRACTION_CATEGORIES.map((c) => (
+                <div key={c.label} className="flex items-start gap-2">
+                  <span className="text-lg leading-none">{c.icon}</span>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{c.label}</p>
+                    <p className="text-xs text-gray-500">{c.description}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
+            <p className="mt-4 border-t border-border-subtle pt-3 text-xs text-gray-400">
+              Every value comes with its source page and an evidence quote, so you can verify anything before relying on it.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
+
+      {!showAdvanced && status === "done" && result && (
+        <div className="space-y-5">
+          <DocumentHeader result={result} onStartOver={startOver} />
+          <DocumentOverview result={result} />
+          <ReviewQueueList tasks={result.verificationReport?.review_tasks ?? []} />
+          <DocumentWorkspace result={result} />
+        </div>
+      )}
     </div>
   );
 }

@@ -24,3 +24,6 @@ appsettings.Local.json
 .idea/
 Thumbs.db
 Desktop.ini
+
+# Removed feature backups (kept locally, not committed)
+*.zip

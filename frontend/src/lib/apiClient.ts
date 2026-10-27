@@ -1,12 +1,9 @@
-// Two independent credentials, sent together on every request:
-// - Portal token: identifies the signed-in Google account, authenticates /api/auth, /api/my/*.
-// - Test API key: one of the account's own generated keys, pasted in to exercise the actual
-//   document-processing endpoints (/api/documents/*, /api/agent/*) from the Playground.
-// The backend's two auth schemes each look at their own header, so sending both is harmless —
-// the API-key scheme only reads X-Document-Api-Key (falling back to Authorization only when that
-// header is absent), and routes pinned to the JWT scheme never consult X-Document-Api-Key at all.
+// The portal token (issued on sign-in) is sent on every request and is the ONLY credential the
+// frontend ever handles. Document-processing/agent calls made from this app — including the
+// Playground — authenticate with it too and spend the signed-in account's own credit; there is no
+// "paste your API key here" step anywhere in the UI. A generated API key (API Access) is only for
+// the user's own external application calling this API directly, outside this frontend.
 const PORTAL_TOKEN_STORAGE_KEY = "pixous_portal_token";
-const TEST_API_KEY_STORAGE_KEY = "pixous_test_api_key";
 
 export class ApiError extends Error {
   status: number;
@@ -31,21 +28,19 @@ export function clearPortalToken(): void {
   localStorage.removeItem(PORTAL_TOKEN_STORAGE_KEY);
 }
 
-export function getTestApiKey(): string | null {
-  return localStorage.getItem(TEST_API_KEY_STORAGE_KEY);
-}
-
-export function setTestApiKey(key: string): void {
-  localStorage.setItem(TEST_API_KEY_STORAGE_KEY, key);
-}
-
-export function clearTestApiKey(): void {
-  localStorage.removeItem(TEST_API_KEY_STORAGE_KEY);
-}
-
 export function clearSession(): void {
   clearPortalToken();
-  clearTestApiKey();
+}
+
+/** Fired whenever a request authenticated with the portal token comes back 401, so AuthContext
+ * can clear stale session state and let ProtectedRoute redirect to /login — otherwise an expired
+ * or revoked session just fails silently on every subsequent call with no visible recovery. */
+export const SESSION_EXPIRED_EVENT = "pixous:session-expired";
+
+function notifyIfSessionExpired(status: number): void {
+  if (status === 401 && getPortalToken()) {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
 }
 
 /**
@@ -81,10 +76,6 @@ function withAuthHeaders(init: RequestInit): RequestInit {
   if (portalToken) {
     headers.set("Authorization", `Bearer ${portalToken}`);
   }
-  const testKey = getTestApiKey();
-  if (testKey) {
-    headers.set("X-Document-Api-Key", testKey);
-  }
   return { ...init, headers };
 }
 
@@ -99,6 +90,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const { body } = await parseBody(res);
 
   if (!res.ok) {
+    notifyIfSessionExpired(res.status);
     const message =
       (body && typeof body === "object" && ("message" in body || "error" in body)
         ? (body as Record<string, string>).message ?? (body as Record<string, string>).error
@@ -125,6 +117,10 @@ export async function rawApiRequest(
   const durationMs = Math.round(performance.now() - started);
   const { body, bodyIsText } = await parseBody(res);
 
+  if (!res.ok) {
+    notifyIfSessionExpired(res.status);
+  }
+
   const responseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {
     responseHeaders[key] = value;
@@ -139,4 +135,84 @@ export async function rawApiRequest(
     body,
     bodyIsText,
   };
+}
+
+/** Fetches an authenticated binary endpoint and returns an object URL — for e.g. an <img src>
+ * that needs the bearer token, which a plain <img> request can't attach on its own. Caller owns
+ * revoking it (URL.revokeObjectURL) once no longer displayed. */
+export async function fetchBlobUrl(path: string): Promise<string | null> {
+  const res = await fetch(`/api${path}`, withAuthHeaders({}));
+  if (!res.ok) {
+    notifyIfSessionExpired(res.status);
+    return null;
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** POSTs JSON and returns an object URL for the binary response — for a live preview <iframe>/<embed>. Caller owns revoking it. */
+export async function postForBlobUrl(path: string, body: unknown): Promise<string> {
+  const res = await fetch(`/api${path}`, withAuthHeaders({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+
+  if (!res.ok) {
+    notifyIfSessionExpired(res.status);
+    const { body: errBody } = await parseBody(res);
+    const message =
+      (errBody && typeof errBody === "object" && "error" in errBody ? (errBody as Record<string, string>).error : null) ||
+      `Request failed with status ${res.status}`;
+    throw new ApiError(res.status, message, errBody);
+  }
+
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/** Downloads an authenticated file endpoint (CSV/Markdown export) and saves it via the browser,
+ * since a plain <a href> can't attach the portal token's Authorization header. */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`/api${path}`, withAuthHeaders({}));
+  if (!res.ok) {
+    notifyIfSessionExpired(res.status);
+    throw new ApiError(res.status, `Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  saveBlob(blob, filename);
+}
+
+/** POSTs JSON and saves the binary response (e.g. document generation), reading the filename off Content-Disposition. */
+export async function postAndDownload(path: string, body: unknown, fallbackFilename: string): Promise<void> {
+  const res = await fetch(`/api${path}`, withAuthHeaders({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+
+  if (!res.ok) {
+    notifyIfSessionExpired(res.status);
+    const { body: errBody } = await parseBody(res);
+    const message =
+      (errBody && typeof errBody === "object" && "error" in errBody ? (errBody as Record<string, string>).error : null) ||
+      `Request failed with status ${res.status}`;
+    throw new ApiError(res.status, message, errBody);
+  }
+
+  const disposition = res.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  const blob = await res.blob();
+  saveBlob(blob, match ? match[1] : fallbackFilename);
 }

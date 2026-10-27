@@ -56,7 +56,9 @@ public class CustomerAccountService
                 PictureUrl = pictureUrl,
                 IsAdmin = isAdmin,
                 CreatedAt = DateTime.UtcNow,
-                LastLoginAt = DateTime.UtcNow
+                LastLoginAt = DateTime.UtcNow,
+                CreditLimit = _options.DefaultAccountCreditLimit,
+                BillingCycle = CurrentBillingCycle()
             };
             _db.CustomerAccounts.Add(existing);
         }
@@ -103,7 +105,9 @@ public class CustomerAccountService
             Name = string.IsNullOrWhiteSpace(name) ? email : name.Trim(),
             IsAdmin = IsAllowlistedAdmin(email),
             CreatedAt = DateTime.UtcNow,
-            LastLoginAt = DateTime.UtcNow
+            LastLoginAt = DateTime.UtcNow,
+            CreditLimit = _options.DefaultAccountCreditLimit,
+            BillingCycle = CurrentBillingCycle()
         };
         account.PasswordHash = PasswordHasher.HashPassword(account, password);
 
@@ -171,6 +175,76 @@ public class CustomerAccountService
 
     public async Task<List<CustomerAccountEntity>> ListAllAsync(CancellationToken cancellationToken = default) =>
         await _db.CustomerAccounts.OrderByDescending(a => a.CreatedAt).ToListAsync(cancellationToken);
+
+    /// <summary>
+    /// Checks whether an account has enough remaining credit for an incoming page count — the
+    /// account-level equivalent of ICredentialRegistry.CheckQuotaAsync, shared by every self-serve
+    /// key the account owns plus direct Playground testing via the portal session.
+    /// </summary>
+    public async Task<(bool Allowed, int Remaining, string Message)> CheckCreditAsync(
+        string accountId, int incomingPages, CancellationToken cancellationToken = default)
+    {
+        var account = await _db.CustomerAccounts.FirstOrDefaultAsync(a => a.AccountId == accountId, cancellationToken);
+        if (account == null)
+        {
+            return (false, 0, $"Account '{accountId}' not found.");
+        }
+
+        RolloverBillingCycleIfNeeded(account);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        int remaining = Math.Max(0, account.CreditLimit - account.CreditsUsed);
+        if (account.CreditsUsed + incomingPages > account.CreditLimit)
+        {
+            return (false, remaining,
+                $"Monthly credit limit exceeded. Limit: {account.CreditLimit:N0}, used: {account.CreditsUsed:N0}, requested: {incomingPages:N0}.");
+        }
+
+        return (true, remaining, "Credit available.");
+    }
+
+    /// <summary>
+    /// Records credit consumption against the account's shared pool — called instead of (for
+    /// self-serve keys, in addition to) ICredentialRegistry.RecordUsageAsync's per-key counters.
+    /// </summary>
+    public async Task RecordCreditUsageAsync(string accountId, int pages, CancellationToken cancellationToken = default)
+    {
+        var account = await _db.CustomerAccounts.FirstOrDefaultAsync(a => a.AccountId == accountId, cancellationToken);
+        if (account == null)
+        {
+            return;
+        }
+
+        RolloverBillingCycleIfNeeded(account);
+        account.CreditsUsed += pages;
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>Admin action: grants or adjusts an account's shared credit limit.</summary>
+    public async Task<CustomerAccountEntity?> SetCreditLimitAsync(string accountId, int newLimit, CancellationToken cancellationToken = default)
+    {
+        var account = await _db.CustomerAccounts.FirstOrDefaultAsync(a => a.AccountId == accountId, cancellationToken);
+        if (account == null)
+        {
+            return null;
+        }
+
+        account.CreditLimit = newLimit;
+        await _db.SaveChangesAsync(cancellationToken);
+        return account;
+    }
+
+    private static void RolloverBillingCycleIfNeeded(CustomerAccountEntity account)
+    {
+        string currentCycle = CurrentBillingCycle();
+        if (!string.Equals(account.BillingCycle, currentCycle, StringComparison.Ordinal))
+        {
+            account.BillingCycle = currentCycle;
+            account.CreditsUsed = 0;
+        }
+    }
+
+    private static string CurrentBillingCycle() => DateTime.UtcNow.ToString("yyyy-MM");
 
     private bool IsAllowlistedAdmin(string email) =>
         _options.AdminEmails.Any(a => string.Equals(NormalizeEmail(a), email, StringComparison.Ordinal));

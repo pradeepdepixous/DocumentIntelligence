@@ -27,7 +27,7 @@ public class OpenAiLLMClient : ILLMClient
 
         _apiKey = apiKey.Trim();
         _modelName = string.IsNullOrWhiteSpace(modelName) ? "gpt-4o-mini" : modelName.Trim();
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        _httpClient = httpClient ?? Common.FastHttpClientHelper.CreateClient(TimeSpan.FromMinutes(2));
     }
 
     public async Task<string> GenerateContentAsync(

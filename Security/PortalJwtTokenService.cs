@@ -32,6 +32,16 @@ public class PortalJwtTokenService
             new(ClaimTypes.Name, account.Name),
         };
 
+        // Every signed-in account can exercise the standard operations against its OWN resources
+        // (document processing, summarize, ask, evaluate) straight from the Playground — this is
+        // the same permission ceiling a self-serve key already gets (see SELF_SERVE_PERMISSIONS on
+        // the frontend), just granted implicitly to the session instead of requiring a key first.
+        // "admin" is never implicit; only the allowlisted admin email ever receives it.
+        foreach (var role in new[] { "process", "summarize", "ask", "evaluate" })
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+        }
+
         if (account.IsAdmin)
         {
             claims.Add(new Claim(ClaimTypes.Role, "admin"));

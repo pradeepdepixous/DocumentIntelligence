@@ -32,7 +32,7 @@ public class DocumentIntelligenceClient : IDocumentIntelligenceClient, IDisposab
             throw new ArgumentException("Project access key cannot be empty.", nameof(projectAccessKey));
 
         _disposeClient = httpClient == null;
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _httpClient = httpClient ?? Common.FastHttpClientHelper.CreateClient(TimeSpan.FromMinutes(10));
 
         _httpClient.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
         _httpClient.DefaultRequestHeaders.Remove("X-Document-Api-Key");

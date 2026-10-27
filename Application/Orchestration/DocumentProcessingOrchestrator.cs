@@ -10,7 +10,6 @@ using PixousDocIntelligence.Persistence.Repositories;
 using PixousDocIntelligence.Pipeline.Batching;
 using PixousDocIntelligence.Pipeline.Extraction;
 using PixousDocIntelligence.Pipeline.Ingestion;
-using PixousDocIntelligence.Pipeline.Normalization;
 using PixousDocIntelligence.Pipeline.Stitching;
 using PixousDocIntelligence.Pipeline.Verification;
 
@@ -189,10 +188,6 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             var stitchedEnvelope = stitchingResult.Envelope;
             var reconciliationLedger = stitchingResult.Ledger;
 
-            // Normalize values (e.g. dates -> plan.NormalizationRules.DateFormat) while preserving
-            // the original verbatim text and its evidence.
-            ValueNormalizer.NormalizeEnvelope(stitchedEnvelope, plan);
-
             // --- PHASE 6: EVIDENCE VERIFICATION & QUALITY CONTROL ---
             progress?.Report("[PHASE 6] Running deterministic evidence verification & quality calibration...");
             var qualityPolicy = new QualityPolicy
@@ -205,6 +200,43 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 stitchedEnvelope, 
                 qualityPolicy, 
                 cancellationToken);
+
+            // Under the markdown-first extraction design, Items/Tables are EXPECTED to be empty —
+            // that's no longer a failure signal. The real completeness signals now are: did every
+            // page get a markdown transcript, and did we get a document summary at all. Missing
+            // either almost always means a malformed/incomplete model response for this run.
+            var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
+            var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
+
+            if (missingPages.Count > 0)
+            {
+                verificationReport.ReviewTasks.Add(new ReviewTask
+                {
+                    JobId = job.JobId,
+                    FieldKey = "(none)",
+                    PageNumber = missingPages[0],
+                    Reason = "incomplete_transcription",
+                    ReportedConfidence = 0,
+                    SourceQuote = string.Empty,
+                    ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
+                                     "This usually means the extraction model's response for this run was malformed or incomplete — " +
+                                     "retrying the same document is the first thing to try."
+                });
+            }
+
+            if (string.IsNullOrWhiteSpace(stitchedEnvelope.DocumentSummary))
+            {
+                verificationReport.ReviewTasks.Add(new ReviewTask
+                {
+                    JobId = job.JobId,
+                    FieldKey = "(none)",
+                    PageNumber = 1,
+                    Reason = "incomplete_transcription",
+                    ReportedConfidence = 0,
+                    SourceQuote = string.Empty,
+                    ReviewerNotes = "No document summary was generated for this run. Retrying the same document is the first thing to try."
+                });
+            }
 
             // Persist stitched records and review tasks to repository
             await _repository.SaveStitchedRecordAsync(job.JobId, job.DocumentId, stitchedEnvelope, reconciliationLedger, cancellationToken);

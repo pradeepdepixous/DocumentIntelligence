@@ -53,9 +53,11 @@ public class AdminController : ControllerBase
                 is_admin = a.IsAdmin,
                 created_at = a.CreatedAt,
                 last_login_at = a.LastLoginAt,
+                credit_limit = a.CreditLimit,
+                credits_used = a.CreditsUsed,
+                credits_remaining = Math.Max(0, a.CreditLimit - a.CreditsUsed),
                 total_keys = keys.Count,
                 active_keys = keys.Count(c => c.IsActive),
-                total_pages_used_this_cycle = keys.Sum(c => c.PagesUsedThisMonth),
                 total_requests = keys.Sum(c => c.TotalRequests)
             };
         }));
@@ -116,6 +118,37 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
+    /// Grants or adjusts a customer account's shared credit limit (the pool spent by both their
+    /// own Playground testing and every self-serve key they own).
+    /// </summary>
+    [HttpPost("accounts/{accountId}/credit")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetAccountCredit(string accountId, [FromBody] SetAccountCreditRequest request, CancellationToken cancellationToken)
+    {
+        if (request.CreditLimit < 0)
+        {
+            return BadRequest(new { error = "creditLimit must be zero or positive." });
+        }
+
+        var updated = await _accountService.SetCreditLimitAsync(accountId, request.CreditLimit, cancellationToken);
+        if (updated == null)
+        {
+            return NotFound(new { error = $"Account '{accountId}' not found." });
+        }
+
+        return Ok(new
+        {
+            message = $"Credit limit updated for '{updated.Email}'.",
+            account_id = updated.AccountId,
+            credit_limit = updated.CreditLimit,
+            credits_used = updated.CreditsUsed,
+            credits_remaining = Math.Max(0, updated.CreditLimit - updated.CreditsUsed)
+        });
+    }
+
+    /// <summary>
     /// Revokes any customer's key immediately, regardless of who owns it — the admin moderation action.
     /// </summary>
     [HttpPost("credentials/{clientId}/revoke")]
@@ -131,4 +164,9 @@ public class AdminController : ControllerBase
 
         return Ok(new { message = $"Key '{clientId}' revoked by admin.", client_id = clientId, revoked_at = DateTime.UtcNow });
     }
+}
+
+public class SetAccountCreditRequest
+{
+    public int CreditLimit { get; set; }
 }

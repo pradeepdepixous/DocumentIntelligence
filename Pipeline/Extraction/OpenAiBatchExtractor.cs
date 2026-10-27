@@ -80,35 +80,10 @@ public class OpenAiBatchExtractor : IBatchExtractor
         string responseJson = await _llmClient.GenerateContentAsync(systemInstruction, userPrompt, requireJson: true, cancellationToken);
 
         // 4. Parse into verified DocumentEnvelope
-        return ParseEnvelope(responseJson, batchDescriptor, plan);
+        return ParseEnvelope(responseJson, batchDescriptor);
     }
 
-    private static string FormatPlanForPrompt(ExtractionPlan plan)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"Target Document Type: {plan.TargetDocumentType}");
-        sb.AppendLine($"Extraction Mode: {plan.ExtractionMode}");
-        sb.AppendLine("Planned Fields:");
-
-        foreach (var field in plan.DesiredFields)
-        {
-            sb.Append($"- {field.FieldKey} ({field.FieldLabel}) [{field.ValueType}]: {field.Description}");
-            if (field.Aliases.Count > 0)
-            {
-                sb.Append($" (Aliases: {string.Join(", ", field.Aliases)})");
-            }
-            sb.AppendLine();
-        }
-
-        if (plan.PreserveTables)
-        {
-            sb.AppendLine("Preserve all relevant tables with their row and column structure.");
-        }
-
-        return sb.ToString();
-    }
-
-    private static DocumentEnvelope ParseEnvelope(string rawJson, BatchDescriptor batch, ExtractionPlan plan)
+    private static DocumentEnvelope ParseEnvelope(string rawJson, BatchDescriptor batch)
     {
         var envelope = new DocumentEnvelope
         {
@@ -144,63 +119,10 @@ public class OpenAiBatchExtractor : IBatchExtractor
                 Pages = pages
             });
 
-            // 3. Backward-compatible items & tables
-            if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var itemElem in itemsElement.EnumerateArray())
-                {
-                    string fieldKey = itemElem.TryGetProperty("field_key", out var fk) ? fk.GetString() ?? string.Empty : string.Empty;
-                    string fieldLabel = itemElem.TryGetProperty("field_label", out var fl) ? fl.GetString() ?? fieldKey : fieldKey;
-                    string valueType = itemElem.TryGetProperty("value_type", out var vt) ? vt.GetString() ?? "string" : "string";
-
-                    object? val = null;
-                    if (itemElem.TryGetProperty("value", out var vElem))
-                    {
-                        if (vElem.ValueKind == JsonValueKind.Null || vElem.ValueKind == JsonValueKind.Undefined)
-                        {
-                            continue;
-                        }
-                        val = vElem.Clone();
-                    }
-                    else
-                    {
-                        continue;
-                    }
-
-                    var sources = EnvelopeJsonParsing.ParseSources(itemElem, batch);
-
-                    double confidence = 0.95;
-                    if (itemElem.TryGetProperty("confidence", out var conf) && 
-                        conf.ValueKind == JsonValueKind.Number && 
-                        conf.TryGetDouble(out double c))
-                    {
-                        confidence = Math.Clamp(c, 0.0, 1.0);
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(fieldKey) && val != null)
-                    {
-                        envelope.Items.Add(new ExtractedItem
-                        {
-                            ItemType = "field",
-                            FieldKey = fieldKey,
-                            FieldLabel = fieldLabel,
-                            Value = val,
-                            ValueType = valueType,
-                            Sources = sources,
-                            Confidence = new ConfidenceSignal
-                            {
-                                Value = confidence,
-                                Source = "model_reported"
-                            },
-                            ValidationStatus = confidence >= 0.85 ? "valid" : "flagged"
-                        });
-                    }
-                }
-            }
-
-            envelope.Tables.AddRange(EnvelopeJsonParsing.ParseTables(root, batch));
+            // Items/Tables are intentionally left empty: this prompt asks for markdown transcription,
+            // not structured field extraction, so there is nothing meaningful to parse into them.
         }
-        catch (JsonException) { /* Return envelope with items found */ }
+        catch (JsonException) { /* Return envelope with pages found so far */ }
 
         return envelope;
     }
