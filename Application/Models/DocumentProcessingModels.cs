@@ -8,6 +8,8 @@ namespace PixousDocIntelligence.Application.Models;
 
 public class DocumentProcessingRequest
 {
+    public string? JobId { get; set; }
+    public string? DocumentId { get; set; }
     public string DocumentPath { get; set; } = string.Empty;
     public string? UserInstructions { get; set; }
     public string TenantId { get; set; } = "default-tenant";
@@ -16,6 +18,8 @@ public class DocumentProcessingRequest
     public string? Model { get; set; }
     public string? ApiKey { get; set; }
     public string? Tier { get; set; }
+    public string? Mode { get; set; }
+    public string? Schema { get; set; }
 }
 
 public class DocumentProcessingResult

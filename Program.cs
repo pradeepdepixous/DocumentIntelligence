@@ -136,6 +136,9 @@ public class Program
         builder.Services.AddSingleton<IBatchScheduler, BatchScheduler>();
         builder.Services.AddSingleton<IStitchingEngine, ConfidenceAwareStitcher>();
         builder.Services.AddSingleton<IEvidenceVerifier, EvidenceVerifier>();
+        builder.Services.AddSingleton<PixousDocIntelligence.Application.Jobs.IDocumentJobQueue, PixousDocIntelligence.Application.Jobs.DocumentJobQueue>();
+        builder.Services.AddSingleton<PixousDocIntelligence.Services.Campaigns.ICampaignStorageService, PixousDocIntelligence.Services.Campaigns.CampaignStorageService>();
+        builder.Services.AddHostedService<PixousDocIntelligence.Application.Jobs.DocumentProcessingBackgroundWorker>();
         builder.Services.AddScoped<IDocumentProcessingOrchestrator, DocumentProcessingOrchestrator>();
         builder.Services.AddScoped<ProcessDocumentUseCase>();
 

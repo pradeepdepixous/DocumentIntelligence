@@ -63,6 +63,15 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
         var ingestionService = new DocumentIngestionService();
         var job = await ingestionService.IngestDocumentAsync(request.DocumentPath, request.TenantId, cancellationToken);
 
+        if (!string.IsNullOrWhiteSpace(request.JobId))
+        {
+            job.JobId = request.JobId;
+        }
+        if (!string.IsNullOrWhiteSpace(request.DocumentId))
+        {
+            job.DocumentId = request.DocumentId;
+        }
+
         var docEntity = new DocumentEntity
         {
             DocumentId = job.DocumentId,
@@ -97,11 +106,25 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             var llmClient = _llmClientFactory.GetClient(request.Provider, request.ApiKey, request.Model, request.Tier);
 
             // --- PHASE 2: INSTRUCTION PLANNER & DYNAMIC SCHEMA ---
-            progress?.Report($"[PHASE 2] Synthesizing extraction plan and dynamic schema with {llmClient.ProviderName} ({llmClient.ModelName})...");
-            var planner = new InstructionPlanner(llmClient);
-            string instructions = request.UserInstructions 
-                ?? "Extract all critical business entities, dates, parties, contact details, services, and tables.";
-            var plan = await planner.GeneratePlanAsync(instructions, documentTypeHint: null, cancellationToken: cancellationToken);
+            ExtractionPlan plan;
+            if (!string.IsNullOrWhiteSpace(request.Schema))
+            {
+                progress?.Report("[PHASE 2] Loading manual JSON schema and bypassing LLM planner...");
+                plan = SchemaParser.Parse(request.Schema, request.UserInstructions);
+            }
+            else
+            {
+                progress?.Report($"[PHASE 2] Synthesizing extraction plan and dynamic schema with {llmClient.ProviderName} ({llmClient.ModelName})...");
+                var planner = new InstructionPlanner(llmClient);
+                string instructions = request.UserInstructions 
+                    ?? "Extract all critical business entities, dates, parties, contact details, services, and tables.";
+                plan = await planner.GeneratePlanAsync(instructions, documentTypeHint: null, cancellationToken: cancellationToken);
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Mode))
+            {
+                plan.ExtractionMode = request.Mode;
+            }
 
             jobEntity.ExtractionPlanJson = JsonSerializer.Serialize(plan);
             jobEntity.SchemaVersion = plan.SchemaVersion;
@@ -125,11 +148,12 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 job.Sha256Checksum);
             await _repository.SaveBatchManifestAsync(manifest, cancellationToken);
 
-            // --- PHASE 4: BATCH EXTRACTION (GEMINI OR OPENAI) ---
-            progress?.Report($"[PHASE 4] Extracting {manifest.Batches.Count} batches via {llmClient.ProviderName} ({llmClient.ModelName})...");
+            // --- PHASE 4: BATCH EXTRACTION (GEMINI OR OPENAI VIA STRATEGY) ---
+            var strategy = Pipeline.Extraction.ExtractionStrategyResolver.Resolve(plan, request.Mode);
+            progress?.Report($"[PHASE 4] Extracting {manifest.Batches.Count} batches via {llmClient.ProviderName} ({llmClient.ModelName}) using [{strategy.ModeName}] strategy...");
             Pipeline.Extraction.IBatchExtractor batchExtractor = llmClient.ProviderName.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-                ? new Pipeline.Extraction.OpenAiBatchExtractor(llmClient)
-                : new Pipeline.Extraction.GeminiBatchExtractor(request.ApiKey ?? _options.Gemini.ApiKey, llmClient.ModelName);
+                ? new Pipeline.Extraction.OpenAiBatchExtractor(llmClient, strategy)
+                : new Pipeline.Extraction.GeminiBatchExtractor(request.ApiKey ?? _options.Gemini.ApiKey, llmClient.ModelName, strategy: strategy);
 
             var batchEnvelopes = new List<DocumentEnvelope>();
 
@@ -201,30 +225,30 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 qualityPolicy, 
                 cancellationToken);
 
-            // Under the markdown-first extraction design, Items/Tables are EXPECTED to be empty —
-            // that's no longer a failure signal. The real completeness signals now are: did every
-            // page get a markdown transcript, and did we get a document summary at all. Missing
-            // either almost always means a malformed/incomplete model response for this run.
-            var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
-            var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
-
-            if (missingPages.Count > 0)
+            // In markdown mode without structured items, verify transcript completeness
+            if (stitchedEnvelope.Items.Count == 0 && stitchedEnvelope.Pages.Count > 0)
             {
-                verificationReport.ReviewTasks.Add(new ReviewTask
+                var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
+                var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
+
+                if (missingPages.Count > 0)
                 {
-                    JobId = job.JobId,
-                    FieldKey = "(none)",
-                    PageNumber = missingPages[0],
-                    Reason = "incomplete_transcription",
-                    ReportedConfidence = 0,
-                    SourceQuote = string.Empty,
-                    ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
-                                     "This usually means the extraction model's response for this run was malformed or incomplete — " +
-                                     "retrying the same document is the first thing to try."
-                });
+                    verificationReport.ReviewTasks.Add(new ReviewTask
+                    {
+                        JobId = job.JobId,
+                        FieldKey = "(none)",
+                        PageNumber = missingPages[0],
+                        Reason = "incomplete_transcription",
+                        ReportedConfidence = 0,
+                        SourceQuote = string.Empty,
+                        ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
+                                         "This usually means the extraction model's response for this run was malformed or incomplete — " +
+                                         "retrying the same document is the first thing to try."
+                    });
+                }
             }
 
-            if (string.IsNullOrWhiteSpace(stitchedEnvelope.DocumentSummary))
+            if (string.IsNullOrWhiteSpace(stitchedEnvelope.DocumentSummary) && stitchedEnvelope.Items.Count == 0)
             {
                 verificationReport.ReviewTasks.Add(new ReviewTask
                 {
@@ -256,7 +280,7 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             await _repository.UpdateJobStatusAsync(job.JobId, finalStatus, null, cancellationToken);
             totalStopwatch.Stop();
 
-            return new DocumentProcessingResult
+            var result = new DocumentProcessingResult
             {
                 JobId = job.JobId,
                 DocumentId = job.DocumentId,
@@ -273,6 +297,9 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 ReconciliationLedgerPath = "[in-memory]",
                 ExecutionDurationMs = totalStopwatch.ElapsedMilliseconds
             };
+
+            await _repository.SaveProcessingResultAsync(job.JobId, result, cancellationToken);
+            return result;
         }
         catch (Exception ex)
         {

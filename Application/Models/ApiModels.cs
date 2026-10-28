@@ -71,6 +71,46 @@ public class ProcessDocumentUploadRequest
     /// Optional workflow-specific API key. Overrides the server environment key for this processing job.
     /// </summary>
     public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// Extraction mode: 'schema' (structured fields, evidence citations, conflict ledger) or 'markdown' (verbatim layout transcription).
+    /// Defaults to 'schema'.
+    /// </summary>
+    public string? Mode { get; set; } = "schema";
+
+    /// <summary>
+    /// If true, returns 202 Accepted immediately and processes the document in the background.
+    /// Can also be activated via 'Prefer: respond-async' HTTP header.
+    /// </summary>
+    public bool? Async { get; set; }
+
+    /// <summary>
+    /// Optional manual JSON schema (ExtractionPlan JSON, standard JSON Schema draft-07/OpenAPI, or key-value dictionary).
+    /// When provided, bypasses the LLM instruction planner for zero-latency, deterministic schema enforcement.
+    /// </summary>
+    public string? Schema { get; set; }
+
+    /// <summary>
+    /// Optional manual JSON schema uploaded as a .json file.
+    /// </summary>
+    public IFormFile? SchemaFile { get; set; }
+}
+
+/// <summary>
+/// Response returned immediately with HTTP 202 Accepted when a document is queued for background processing.
+/// </summary>
+public class AsyncJobAcceptedResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public string DocumentId { get; set; } = string.Empty;
+    public string Status { get; set; } = "Queued";
+    public string Message { get; set; } = "Document queued for background processing.";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string StatusUrl { get; set; } = string.Empty;
+    public string ResultUrl { get; set; } = string.Empty;
+    public string EnvelopeUrl { get; set; } = string.Empty;
+    public string CsvUrl { get; set; } = string.Empty;
+    public string MarkdownUrl { get; set; } = string.Empty;
 }
 
 /// <summary>

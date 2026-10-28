@@ -468,6 +468,48 @@ public class PostgresDocumentProcessingRepository : IDocumentProcessingRepositor
         return results;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PixousDocIntelligence.Application.Models.DocumentProcessingResult> ResultCache = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task SaveProcessingResultAsync(string jobId, PixousDocIntelligence.Application.Models.DocumentProcessingResult result, CancellationToken cancellationToken = default)
+    {
+        ResultCache[jobId] = result;
+        return Task.CompletedTask;
+    }
+
+    public async Task<PixousDocIntelligence.Application.Models.DocumentProcessingResult?> GetProcessingResultAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        if (ResultCache.TryGetValue(jobId, out var cached))
+        {
+            return cached;
+        }
+
+        var job = await GetJobAsync(jobId, cancellationToken);
+        if (job == null) return null;
+
+        var envelope = await GetStitchedEnvelopeAsync(jobId, cancellationToken);
+        var manifest = await GetBatchManifestAsync(jobId, cancellationToken);
+        var ledger = await GetReconciliationLedgerAsync(jobId, cancellationToken);
+        var reviewTasks = await GetReviewTasksAsync(jobId, cancellationToken);
+
+        return new PixousDocIntelligence.Application.Models.DocumentProcessingResult
+        {
+            JobId = job.JobId,
+            DocumentId = job.DocumentId,
+            Status = job.Status,
+            Manifest = manifest ?? new BatchManifest(),
+            StitchedEnvelope = envelope ?? new DocumentEnvelope(),
+            ReconciliationLedger = ledger ?? new ReconciliationLedger(),
+            VerificationReport = new VerificationReport
+            {
+                ReviewTasks = reviewTasks ?? new List<ReviewTask>()
+            },
+            OutputDirectory = "[in-memory]",
+            EnvelopeJsonPath = "[in-memory]",
+            ExtractedCsvPath = "[in-memory]",
+            ReconciliationLedgerPath = "[in-memory]"
+        };
+    }
+
     public string GetJobDirectory(string jobId)
     {
         // Pure PostgreSQL storage does not rely on disk folders

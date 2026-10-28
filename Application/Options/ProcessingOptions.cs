@@ -24,7 +24,7 @@ public class GeminiConfig
 
 public class BatchingConfig
 {
-    public int DefaultBatchSize { get; set; } = 4;
+    public int DefaultBatchSize { get; set; } = 15;
     public int DefaultOverlapPages { get; set; } = 1;
     public int SmallDocThreshold { get; set; } = 4;
     public int SmallDocBatchSize { get; set; } = 4;

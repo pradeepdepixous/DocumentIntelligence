@@ -47,5 +47,8 @@ public interface IDocumentProcessingRepository
 
     Task<List<ReviewTask>?> GetReviewTasksAsync(string jobId, CancellationToken cancellationToken = default);
 
+    Task SaveProcessingResultAsync(string jobId, PixousDocIntelligence.Application.Models.DocumentProcessingResult result, CancellationToken cancellationToken = default);
+    Task<PixousDocIntelligence.Application.Models.DocumentProcessingResult?> GetProcessingResultAsync(string jobId, CancellationToken cancellationToken = default);
+
     string GetJobDirectory(string jobId);
 }

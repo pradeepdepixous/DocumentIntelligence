@@ -131,5 +131,19 @@ public class InMemoryDocumentProcessingRepository : IDocumentProcessingRepositor
         return Task.FromResult(tasks);
     }
 
+    private readonly ConcurrentDictionary<string, PixousDocIntelligence.Application.Models.DocumentProcessingResult> _results = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task SaveProcessingResultAsync(string jobId, PixousDocIntelligence.Application.Models.DocumentProcessingResult result, CancellationToken cancellationToken = default)
+    {
+        _results[jobId] = result;
+        return Task.CompletedTask;
+    }
+
+    public Task<PixousDocIntelligence.Application.Models.DocumentProcessingResult?> GetProcessingResultAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        _results.TryGetValue(jobId, out var result);
+        return Task.FromResult(result);
+    }
+
     public string GetJobDirectory(string jobId) => string.Empty;
 }
