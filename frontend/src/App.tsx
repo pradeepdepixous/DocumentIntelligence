@@ -9,6 +9,7 @@ import ApiAccess from "./pages/ApiAccess";
 import Playground from "./pages/Playground";
 import ApiDocs from "./pages/ApiDocs";
 import Admin from "./pages/Admin";
+import DocumentStudio from "./pages/DocumentStudio";
 
 function RequireAdmin({ children }: { children: React.ReactNode }) {
   const { isAdmin } = useAuth();
@@ -28,6 +29,7 @@ function AppRoutes() {
         }
       >
         <Route path="dashboard" element={<Overview />} />
+        <Route path="studio" element={<DocumentStudio />} />
         <Route path="api-access" element={<ApiAccess />} />
         <Route path="playground" element={<Playground />} />
         <Route path="docs" element={<ApiDocs />} />

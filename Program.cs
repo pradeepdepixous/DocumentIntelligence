@@ -142,6 +142,19 @@ public class Program
         builder.Services.AddScoped<IDocumentProcessingOrchestrator, DocumentProcessingOrchestrator>();
         builder.Services.AddScoped<ProcessDocumentUseCase>();
 
+        // Template-Based AI Document Generation Pipeline
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Repositories.ITemplateRepository, PixousDocIntelligence.DocumentGeneration.Repositories.TemplateRepository>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Repositories.IDocumentDraftRepository, PixousDocIntelligence.DocumentGeneration.Repositories.DocumentDraftRepository>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Validation.ITemplateValidator, PixousDocIntelligence.DocumentGeneration.Validation.TemplateValidator>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Validation.IContentValidator, PixousDocIntelligence.DocumentGeneration.Validation.ContentValidator>();
+        builder.Services.AddScoped<PixousDocIntelligence.DocumentGeneration.Services.IAiContentGenerator, PixousDocIntelligence.DocumentGeneration.Services.AiContentGenerator>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Services.IMarkdownBuilder, PixousDocIntelligence.DocumentGeneration.Services.MarkdownBuilder>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Rendering.IDocumentRenderer, PixousDocIntelligence.DocumentGeneration.Rendering.OpenXmlDocxRenderer>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Rendering.IDocumentRenderer, PixousDocIntelligence.DocumentGeneration.Rendering.QuestPdfDocumentRenderer>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Services.IDocxTemplateParser, PixousDocIntelligence.DocumentGeneration.Services.DocxTemplateParser>();
+        builder.Services.AddSingleton<PixousDocIntelligence.DocumentGeneration.Services.IDocxTemplatePopulator, PixousDocIntelligence.DocumentGeneration.Services.DocxTemplatePopulator>();
+        builder.Services.AddScoped<PixousDocIntelligence.DocumentGeneration.Services.IDocumentGenerationPipeline, PixousDocIntelligence.DocumentGeneration.Services.DocumentGenerationPipeline>();
+
         // Register secure API-Key authentication and role-based policies
         builder.Services.AddAuthentication(options =>
         {

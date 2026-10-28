@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import pixousLogo from "../assets/pixous-logo.png";
 
 const navItemClass = ({ isActive }: { isActive: boolean }) =>
   `px-3 py-1.5 text-sm font-medium rounded-md ${
@@ -53,14 +52,19 @@ export default function Layout() {
     <div className="min-h-screen bg-app-bg">
       <header className="border-b border-border-subtle bg-white">
         <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-6 py-2.5">
-          <div className="flex shrink-0 items-center gap-2">
-            <img src={pixousLogo} alt="Pixous Technologies" className="h-6 w-auto" />
-            <span className="hidden text-sm font-semibold text-navy md:inline">Document Intelligence</span>
-          </div>
+          <Link to="/" className="flex shrink-0 items-center gap-2">
+            <span className="text-base font-extrabold tracking-tight text-navy">
+              PI<span className="text-emerald-700">X</span>OUS
+            </span>
+            <span className="hidden text-sm font-semibold text-gray-400 md:inline">Document Intelligence</span>
+          </Link>
 
           <nav className="flex gap-1">
             <NavLink to="/dashboard" end className={navItemClass}>
               Overview
+            </NavLink>
+            <NavLink to="/studio" className={navItemClass}>
+              Document Studio
             </NavLink>
             <NavLink to="/api-access" className={navItemClass}>
               API Access

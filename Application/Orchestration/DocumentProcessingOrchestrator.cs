@@ -107,7 +107,22 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
 
             // --- PHASE 2: INSTRUCTION PLANNER & DYNAMIC SCHEMA ---
             ExtractionPlan plan;
-            if (!string.IsNullOrWhiteSpace(request.Schema))
+            bool isMarkdownMode = string.Equals(request.Mode, "markdown", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(request.Mode, "full_content", StringComparison.OrdinalIgnoreCase);
+
+            if (isMarkdownMode)
+            {
+                progress?.Report("[PHASE 2] Markdown extraction requested: bypassing LLM schema planner for high-throughput transcription...");
+                plan = new ExtractionPlan
+                {
+                    TargetDocumentType = "Document",
+                    ExtractionMode = "markdown",
+                    UserInstruction = request.UserInstructions ?? "Transcribe all pages into structured markdown, preserving tables.",
+                    PreserveTables = true,
+                    SchemaVersion = 2
+                };
+            }
+            else if (!string.IsNullOrWhiteSpace(request.Schema))
             {
                 progress?.Report("[PHASE 2] Loading manual JSON schema and bypassing LLM planner...");
                 plan = SchemaParser.Parse(request.Schema, request.UserInstructions);

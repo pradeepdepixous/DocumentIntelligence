@@ -21,6 +21,7 @@ type Status = "idle" | "analyzing" | "done" | "error";
 export default function Playground() {
   const [file, setFile] = useState<File | null>(null);
   const [instructions, setInstructions] = useState("");
+  const [mode, setMode] = useState<"markdown" | "schema">("markdown");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DocumentProcessingResult | null>(null);
@@ -51,6 +52,7 @@ export default function Playground() {
     try {
       const form = new FormData();
       form.append("File", file);
+      form.append("Mode", mode);
       if (instructions.trim()) form.append("Instructions", instructions);
       const data = await apiFetch<DocumentProcessingResult>("/documents/process", { method: "POST", body: form });
       setResult(data);
@@ -94,6 +96,42 @@ export default function Playground() {
       {!showAdvanced && status !== "done" && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <div className="space-y-4 rounded-xl border border-border-subtle bg-white p-6 lg:col-span-2">
+            {/* Extraction Mode Selector */}
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-lg bg-gray-50 p-2.5 border border-border-subtle">
+              <div>
+                <span className="text-xs font-bold text-gray-800">Extraction Mode</span>
+                <p className="text-[11px] text-gray-500">
+                  {mode === "markdown"
+                    ? "Transcribes all pages into high-fidelity Markdown, preserving tables."
+                    : "Deep entity extraction with citation evidence and confidence scores."}
+                </p>
+              </div>
+              <div className="flex gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setMode("markdown")}
+                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition-all ${
+                    mode === "markdown"
+                      ? "bg-navy text-white shadow-xs"
+                      : "bg-white text-gray-600 hover:bg-gray-100 border border-gray-200"
+                  }`}
+                >
+                  ⚡ Markdown & Tables (Fast)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("schema")}
+                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition-all ${
+                    mode === "schema"
+                      ? "bg-navy text-white shadow-xs"
+                      : "bg-white text-gray-600 hover:bg-gray-100 border border-gray-200"
+                  }`}
+                >
+                  📊 Schema Entities
+                </button>
+              </div>
+            </div>
+
             <div
               onDragOver={(e) => {
                 e.preventDefault();

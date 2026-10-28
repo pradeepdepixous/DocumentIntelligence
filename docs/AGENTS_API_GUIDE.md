@@ -10,6 +10,9 @@ If you just want to click around and try this without writing code, use the **Pl
 web portal instead — it does all of this for you with no API key needed. This guide is for calling
 the API directly from your own application.
 
+> Looking to *author* a new document (NDA, SOW, offer letter, etc.) from a template instead of
+> analyzing an existing one? See the [Document Generation API Guide](DOCUMENT_GENERATION_API_GUIDE.md).
+
 ---
 
 ## 1. Get an API key

@@ -1,5 +1,5 @@
 import CodeBlock from "./CodeBlock";
-import MethodBadge from "./MethodBadge";
+import DocsShell, { DocsCallout, DocsSectionCard, EndpointPath, InlineCode } from "./docs/DocsShell";
 
 const SECTIONS = [
   { id: "get-key", label: "Get an API key" },
@@ -12,15 +12,6 @@ const SECTIONS = [
   { id: "errors", label: "Error handling" },
   { id: "good-practices", label: "Good practices" },
 ];
-
-function Section({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
-  return (
-    <section id={id} className="scroll-mt-6 rounded-xl border border-gray-200 bg-white p-6">
-      <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-      <div className="mt-3 space-y-3 text-sm text-gray-700">{children}</div>
-    </section>
-  );
-}
 
 const PROCESS_CURL = `curl -X POST https://your-server/api/documents/process \\
   -H "X-Document-Api-Key: pixous_your_key_here" \\
@@ -196,216 +187,190 @@ const ERROR_ROWS = [
 
 export default function AgentsGuide() {
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[180px_1fr]">
-      <nav className="hidden lg:block">
-        <div className="sticky top-6 space-y-1">
-          {SECTIONS.map((s) => (
-            <a
-              key={s.id}
-              href={`#${s.id}`}
-              className="block rounded-md px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-            >
-              {s.label}
-            </a>
-          ))}
-        </div>
-      </nav>
+    <DocsShell
+      eyebrow="Document Analyst Agents"
+      title="Summarize, ask, and audit a processed document"
+      description="Call the Agent endpoints — Summarize, Ask, and Validate Rules — from your own application. These agents run after a document has been processed; they answer questions and audit a document grounded in its own content, not general knowledge."
+      note="Just want to try this without writing code? Use the Playground — no API key needed."
+      meta={[
+        { label: "Base path", value: "/api/documents · /api/agent" },
+        { label: "Auth header", value: "X-Document-Api-Key" },
+      ]}
+      sections={SECTIONS}
+    >
+      <DocsSectionCard id="get-key" index={1} title="Get an API key">
+        <ol className="list-decimal space-y-1 pl-5">
+          <li>Sign in to the portal (Google or email/password).</li>
+          <li>
+            Go to <strong>API Access</strong> and create a key, leaving the default permissions
+            checked unless you want to restrict it.
+          </li>
+          <li>Copy the key immediately — it's shown once and can't be recovered.</li>
+        </ol>
+        <p>
+          Every key you create draws from your account's shared credit pool (visible on{" "}
+          <strong>Overview</strong>) — the same pool your own Playground testing uses.
+        </p>
+      </DocsSectionCard>
 
-      <div className="space-y-6">
-        <div className="rounded-xl border border-gray-200 bg-white p-6">
-          <h2 className="text-xl font-semibold text-gray-900">Using the Document Analyst Agents</h2>
-          <p className="mt-2 text-sm text-gray-600">
-            This guide shows you how to call the <strong>Agent</strong> endpoints — Summarize, Ask, and Validate Rules —
-            from your own application. These agents run <em>after</em> a document has been processed; they answer
-            questions and audit a document grounded in its own content, not general knowledge.
-          </p>
-          <p className="mt-2 text-sm text-gray-500">
-            Just want to try this without writing code? Use the <strong>Playground</strong> instead — no API key needed.
-          </p>
-        </div>
+      <DocsSectionCard id="authenticate" index={2} title="Authenticate every request">
+        <p>Send your key in the following header on every request:</p>
+        <CodeBlock code="X-Document-Api-Key: pixous_your_key_here" />
+        <p className="text-xs text-gray-500">
+          <InlineCode>Authorization: Bearer &lt;key&gt;</InlineCode> also works as a fallback, but
+          the dedicated header is preferred.
+        </p>
+      </DocsSectionCard>
 
-        <Section id="get-key" title="1. Get an API key">
-          <ol className="list-decimal space-y-1 pl-5">
-            <li>Sign in to the portal (Google or email/password).</li>
-            <li>
-              Go to <strong>API Access</strong> and create a key, leaving the default permissions checked unless you
-              want to restrict it.
-            </li>
-            <li>Copy the key immediately — it's shown once and can't be recovered.</li>
-          </ol>
-          <p>
-            Every key you create draws from your account's shared credit pool (visible on <strong>Overview</strong>) —
-            the same pool your own Playground testing uses.
-          </p>
-        </Section>
+      <DocsSectionCard id="workflow" index={3} title="The workflow: process a document, then use the agents">
+        <p>
+          The agents operate on a <strong>job</strong> — you can't ask a question or get a summary
+          until a document has finished processing and produced a <InlineCode>jobId</InlineCode>.
+        </p>
+        <EndpointPath method="POST" path="/api/documents/process" />
+        <table className="w-full text-left text-xs">
+          <thead className="text-gray-500">
+            <tr>
+              <th className="py-1 pr-4">Field</th>
+              <th className="py-1 pr-4">Required</th>
+              <th className="py-1">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-gray-100">
+              <td className="py-1 pr-4 font-mono">File</td>
+              <td className="py-1 pr-4">Yes</td>
+              <td className="py-1">The PDF file to analyze</td>
+            </tr>
+            <tr className="border-t border-gray-100">
+              <td className="py-1 pr-4 font-mono">Instructions</td>
+              <td className="py-1 pr-4">No</td>
+              <td className="py-1">Natural-language hint, e.g. "Extract parties, dates, and payment terms"</td>
+            </tr>
+            <tr className="border-t border-gray-100">
+              <td className="py-1 pr-4 font-mono">Tier</td>
+              <td className="py-1 pr-4">No</td>
+              <td className="py-1">"fast" (default) or "premium"</td>
+            </tr>
+          </tbody>
+        </table>
+        <CodeBlock language="bash" code={PROCESS_CURL} />
+        <p>The response includes the <InlineCode>jobId</InlineCode> you'll need next:</p>
+        <CodeBlock language="json" code={PROCESS_RESPONSE} />
+        <p className="text-xs text-gray-500">
+          Response headers <InlineCode>X-Pages-Processed</InlineCode> and{" "}
+          <InlineCode>X-Quota-Remaining</InlineCode> tell you what this call cost.
+        </p>
+      </DocsSectionCard>
 
-        <Section id="authenticate" title="2. Authenticate every request">
-          <p>Send your key in the following header on every request:</p>
-          <CodeBlock code="X-Document-Api-Key: pixous_your_key_here" />
-          <p className="text-xs text-gray-500">
-            <code className="rounded bg-gray-100 px-1 py-0.5">Authorization: Bearer &lt;key&gt;</code> also works as a
-            fallback, but the dedicated header is preferred.
-          </p>
-        </Section>
+      <DocsSectionCard id="summarize" index={4} title="Summarize">
+        <EndpointPath method="POST" path="/api/agent/jobs/{jobId}/summarize" />
+        <p>Generates an executive summary, optionally focused on one topic. All request fields are optional.</p>
+        <p className="text-xs font-medium text-gray-500">Request</p>
+        <CodeBlock language="json" code={SUMMARIZE_REQUEST} />
+        <p className="text-xs font-medium text-gray-500">Response</p>
+        <CodeBlock language="json" code={SUMMARIZE_RESPONSE} />
+      </DocsSectionCard>
 
-        <Section id="workflow" title="3. The workflow: process a document, then use the agents">
-          <p>
-            The agents operate on a <strong>job</strong> — you can't ask a question or get a summary until a document
-            has finished processing and produced a <code className="rounded bg-gray-100 px-1 py-0.5">jobId</code>.
-          </p>
-          <div className="flex items-center gap-2">
-            <MethodBadge method="POST" />
-            <code className="text-xs">/api/documents/process</code>
-          </div>
+      <DocsSectionCard id="ask" index={5} title="Ask">
+        <EndpointPath method="POST" path="/api/agent/jobs/{jobId}/ask" />
+        <p>
+          Ask a specific question and get a grounded answer with citations.{" "}
+          <InlineCode>Question</InlineCode> is required (PascalCase — this endpoint has no
+          camelCase alias).
+        </p>
+        <p className="text-xs font-medium text-gray-500">Request</p>
+        <CodeBlock language="json" code={ASK_REQUEST} />
+        <p className="text-xs font-medium text-gray-500">Response</p>
+        <CodeBlock language="json" code={ASK_RESPONSE} />
+        <DocsCallout tone="warn">
+          If <InlineCode>isFoundInDocument</InlineCode> is <code>false</code>, treat the answer
+          with caution — always check this field before trusting an answer in an automated
+          pipeline.
+        </DocsCallout>
+      </DocsSectionCard>
+
+      <DocsSectionCard id="validate-rules" index={6} title="Validate Rules">
+        <EndpointPath method="POST" path="/api/agent/jobs/{jobId}/validate-rules" />
+        <p>
+          Audits the document against a checklist you define — pass/fail rules, knockout
+          conditions, and weighted scoring. Useful for compliance checks, vendor scorecards, or
+          contract review rubrics.
+        </p>
+        <p className="text-xs text-gray-500">
+          Rules support both <InlineCode>snake_case</InlineCode> and <InlineCode>camelCase</InlineCode>{" "}
+          field names interchangeably. The sum of all <InlineCode>max_marks</InlineCode> must not
+          exceed <InlineCode>total_marks_cap</InlineCode>, or the request is rejected with 400.
+        </p>
+        <p className="text-xs font-medium text-gray-500">Request</p>
+        <CodeBlock language="json" code={RULES_REQUEST} />
+        <p className="text-xs font-medium text-gray-500">Response</p>
+        <CodeBlock language="json" code={RULES_RESPONSE} />
+        <p className="text-xs text-gray-500">
+          <InlineCode>status</InlineCode> is one of Pass, Fail, Partial, NotApplicable. If any
+          knockout rule fails, <InlineCode>knockout_passed</InlineCode> is false regardless of the
+          numeric score.
+        </p>
+      </DocsSectionCard>
+
+      <DocsSectionCard id="code-examples" index={7} title="Code examples">
+        <p className="text-xs font-medium text-gray-500">JavaScript (fetch)</p>
+        <CodeBlock language="javascript" code={JS_EXAMPLE} />
+        <p className="text-xs font-medium text-gray-500">Python (requests)</p>
+        <CodeBlock language="python" code={PY_EXAMPLE} />
+        <p className="text-xs font-medium text-gray-500">C#</p>
+        <CodeBlock language="csharp" code={CSHARP_EXAMPLE} />
+      </DocsSectionCard>
+
+      <DocsSectionCard id="errors" index={8} title="Error handling">
+        <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="text-gray-500">
               <tr>
-                <th className="py-1 pr-4">Field</th>
-                <th className="py-1 pr-4">Required</th>
-                <th className="py-1">Description</th>
+                <th className="py-1 pr-4">Status</th>
+                <th className="py-1 pr-4">Meaning</th>
+                <th className="py-1">What to do</th>
               </tr>
             </thead>
             <tbody>
-              <tr className="border-t border-gray-100">
-                <td className="py-1 pr-4 font-mono">File</td>
-                <td className="py-1 pr-4">Yes</td>
-                <td className="py-1">The PDF file to analyze</td>
-              </tr>
-              <tr className="border-t border-gray-100">
-                <td className="py-1 pr-4 font-mono">Instructions</td>
-                <td className="py-1 pr-4">No</td>
-                <td className="py-1">Natural-language hint, e.g. "Extract parties, dates, and payment terms"</td>
-              </tr>
-              <tr className="border-t border-gray-100">
-                <td className="py-1 pr-4 font-mono">Tier</td>
-                <td className="py-1 pr-4">No</td>
-                <td className="py-1">"fast" (default) or "premium"</td>
-              </tr>
+              {ERROR_ROWS.map((row) => (
+                <tr key={row.status} className="border-t border-gray-100">
+                  <td className="py-1.5 pr-4 font-mono font-semibold">{row.status}</td>
+                  <td className="py-1.5 pr-4">{row.meaning}</td>
+                  <td className="py-1.5">{row.action}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          <CodeBlock language="bash" code={PROCESS_CURL} />
-          <p>The response includes the <code className="rounded bg-gray-100 px-1 py-0.5">jobId</code> you'll need next:</p>
-          <CodeBlock language="json" code={PROCESS_RESPONSE} />
-          <p className="text-xs text-gray-500">
-            Response headers <code className="rounded bg-gray-100 px-1 py-0.5">X-Pages-Processed</code> and{" "}
-            <code className="rounded bg-gray-100 px-1 py-0.5">X-Quota-Remaining</code> tell you what this call cost.
-          </p>
-        </Section>
+        </div>
+        <p className="text-xs text-gray-500">
+          Every error response includes <InlineCode>{"{ error, message/details }"}</InlineCode> —
+          always surface that text rather than just the status code.
+        </p>
+      </DocsSectionCard>
 
-        <Section id="summarize" title="4. Summarize">
-          <div className="flex items-center gap-2">
-            <MethodBadge method="POST" />
-            <code className="text-xs">/api/agent/jobs/&#123;jobId&#125;/summarize</code>
-          </div>
-          <p>Generates an executive summary, optionally focused on one topic. All request fields are optional.</p>
-          <p className="text-xs font-medium text-gray-500">Request</p>
-          <CodeBlock language="json" code={SUMMARIZE_REQUEST} />
-          <p className="text-xs font-medium text-gray-500">Response</p>
-          <CodeBlock language="json" code={SUMMARIZE_RESPONSE} />
-        </Section>
-
-        <Section id="ask" title="5. Ask">
-          <div className="flex items-center gap-2">
-            <MethodBadge method="POST" />
-            <code className="text-xs">/api/agent/jobs/&#123;jobId&#125;/ask</code>
-          </div>
-          <p>
-            Ask a specific question and get a grounded answer with citations.{" "}
-            <code className="rounded bg-gray-100 px-1 py-0.5">Question</code> is required (PascalCase — this
-            endpoint has no camelCase alias).
-          </p>
-          <p className="text-xs font-medium text-gray-500">Request</p>
-          <CodeBlock language="json" code={ASK_REQUEST} />
-          <p className="text-xs font-medium text-gray-500">Response</p>
-          <CodeBlock language="json" code={ASK_RESPONSE} />
-          <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-800">
-            If <code className="rounded bg-white px-1 py-0.5">isFoundInDocument</code> is <code>false</code>, treat the
-            answer with caution — always check this field before trusting an answer in an automated pipeline.
-          </p>
-        </Section>
-
-        <Section id="validate-rules" title="6. Validate Rules">
-          <div className="flex items-center gap-2">
-            <MethodBadge method="POST" />
-            <code className="text-xs">/api/agent/jobs/&#123;jobId&#125;/validate-rules</code>
-          </div>
-          <p>
-            Audits the document against a checklist you define — pass/fail rules, knockout conditions, and weighted
-            scoring. Useful for compliance checks, vendor scorecards, or contract review rubrics.
-          </p>
-          <p className="text-xs text-gray-500">
-            Rules support both <code className="rounded bg-gray-100 px-1 py-0.5">snake_case</code> and{" "}
-            <code className="rounded bg-gray-100 px-1 py-0.5">camelCase</code> field names interchangeably. The sum of
-            all <code className="rounded bg-gray-100 px-1 py-0.5">max_marks</code> must not exceed{" "}
-            <code className="rounded bg-gray-100 px-1 py-0.5">total_marks_cap</code>, or the request is rejected with 400.
-          </p>
-          <p className="text-xs font-medium text-gray-500">Request</p>
-          <CodeBlock language="json" code={RULES_REQUEST} />
-          <p className="text-xs font-medium text-gray-500">Response</p>
-          <CodeBlock language="json" code={RULES_RESPONSE} />
-          <p className="text-xs text-gray-500">
-            <code className="rounded bg-gray-100 px-1 py-0.5">status</code> is one of Pass, Fail, Partial,
-            NotApplicable. If any knockout rule fails, <code className="rounded bg-gray-100 px-1 py-0.5">knockout_passed</code>{" "}
-            is false regardless of the numeric score.
-          </p>
-        </Section>
-
-        <Section id="code-examples" title="7. Code examples">
-          <p className="text-xs font-medium text-gray-500">JavaScript (fetch)</p>
-          <CodeBlock language="javascript" code={JS_EXAMPLE} />
-          <p className="text-xs font-medium text-gray-500">Python (requests)</p>
-          <CodeBlock language="python" code={PY_EXAMPLE} />
-          <p className="text-xs font-medium text-gray-500">C#</p>
-          <CodeBlock language="csharp" code={CSHARP_EXAMPLE} />
-        </Section>
-
-        <Section id="errors" title="8. Error handling">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="text-gray-500">
-                <tr>
-                  <th className="py-1 pr-4">Status</th>
-                  <th className="py-1 pr-4">Meaning</th>
-                  <th className="py-1">What to do</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ERROR_ROWS.map((row) => (
-                  <tr key={row.status} className="border-t border-gray-100">
-                    <td className="py-1.5 pr-4 font-mono font-semibold">{row.status}</td>
-                    <td className="py-1.5 pr-4">{row.meaning}</td>
-                    <td className="py-1.5">{row.action}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-xs text-gray-500">
-            Every error response includes <code className="rounded bg-gray-100 px-1 py-0.5">{"{ error, message/details }"}</code> —
-            always surface that text rather than just the status code.
-          </p>
-        </Section>
-
-        <Section id="good-practices" title="9. Good practices">
-          <ul className="list-disc space-y-1 pl-5">
-            <li>
-              <strong>Reuse the jobId.</strong> Processing a document is the expensive, credit-consuming step. Once you
-              have a jobId, call Summarize/Ask/Validate Rules on it as many times as you want at no additional page cost.
-            </li>
-            <li>
-              <strong>Check isFoundInDocument</strong> on Ask responses before using the answer in any automated decision.
-            </li>
-            <li>
-              <strong>Check pages_with_no_extracted_content</strong> on the processing response — if pages are listed
-              there, summaries/answers may be missing information from those pages.
-            </li>
-            <li>
-              <strong>Don't hardcode a model/provider</strong> unless you need to — omitting them lets the server use
-              its configured defaults, tunable centrally without you redeploying.
-            </li>
-          </ul>
-        </Section>
-      </div>
-    </div>
+      <DocsSectionCard id="good-practices" index={9} title="Good practices">
+        <ul className="list-disc space-y-1 pl-5">
+          <li>
+            <strong>Reuse the jobId.</strong> Processing a document is the expensive,
+            credit-consuming step. Once you have a jobId, call Summarize/Ask/Validate Rules on it
+            as many times as you want at no additional page cost.
+          </li>
+          <li>
+            <strong>Check isFoundInDocument</strong> on Ask responses before using the answer in
+            any automated decision.
+          </li>
+          <li>
+            <strong>Check pages_with_no_extracted_content</strong> on the processing response — if
+            pages are listed there, summaries/answers may be missing information from those pages.
+          </li>
+          <li>
+            <strong>Don't hardcode a model/provider</strong> unless you need to — omitting them
+            lets the server use its configured defaults, tunable centrally without you
+            redeploying.
+          </li>
+        </ul>
+      </DocsSectionCard>
+    </DocsShell>
   );
 }

@@ -21,7 +21,7 @@ export interface ClientCredential {
 
 // Self-serve permissions available to a customer-created key. "admin" is deliberately excluded —
 // only the allowlisted portal admin identity ever gets that role, and only on their own session.
-export const SELF_SERVE_PERMISSIONS = ["process", "summarize", "ask", "evaluate"] as const;
+export const SELF_SERVE_PERMISSIONS = ["process", "summarize", "ask", "evaluate", "generate"] as const;
 
 export interface PortalAccount {
   account_id: string;
