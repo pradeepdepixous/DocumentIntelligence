@@ -115,6 +115,28 @@ public class PostgresDocumentProcessingRepository : IDocumentProcessingRepositor
         }
     }
 
+    public async Task MarkJobRetryScheduledAsync(
+        string jobId,
+        int attemptCount,
+        DateTime nextAttemptAt,
+        string lastError,
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<DocumentIntelligenceDbContext>();
+
+        var job = await db.ExtractionJobs.FindAsync(new object[] { jobId }, cancellationToken);
+        if (job != null)
+        {
+            job.Status = "RetryWait";
+            job.AttemptCount = attemptCount;
+            job.NextAttemptAt = nextAttemptAt;
+            job.ErrorMessage = lastError;
+            job.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
     public async Task SaveBatchManifestAsync(BatchManifest manifest, CancellationToken cancellationToken = default)
     {
         using var scope = _scopeFactory.CreateScope();

@@ -1,5 +1,15 @@
+import { useState } from "react";
 import CodeBlock from "./CodeBlock";
-import DocsShell, { DocsCallout, DocsSectionCard, EndpointPath, InlineCode } from "./docs/DocsShell";
+import DocsShell, {
+  DocsCallout,
+  DocsSectionCard,
+  EndpointPath,
+  InlineCode,
+  KeyModeNavbar,
+  LanguageNavbar,
+  type KeyMode,
+  type Lang,
+} from "./docs/DocsShell";
 
 const SECTIONS = [
   { id: "authenticate", label: "Authenticate" },
@@ -57,12 +67,37 @@ const SECTION_TYPE_ROWS = [
   { type: "object", shape: "An arbitrary non-empty JSON object" },
 ];
 
-const DRAFT_CURL = `curl -X POST https://your-server/api/documents/draft \\
+// Draft: Default vs Own Key
+const DRAFT_REQUEST_DEFAULT = `{
+  "template_id": "nda",
+  "instructions": "Mutual NDA between Acme Inc (123 Market St, SF) and Beta LLC (55 Harbor Rd, NY), effective today, 2-year term."
+}`;
+
+const DRAFT_CURL_DEFAULT = `curl -X POST https://your-server/api/documents/draft \\
   -H "X-Document-Api-Key: pixous_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{
     "template_id": "nda",
     "instructions": "Mutual NDA between Acme Inc (123 Market St, SF) and Beta LLC (55 Harbor Rd, NY), effective today, 2-year term."
+  }'`;
+
+const DRAFT_REQUEST_OWN_KEY = `{
+  "template_id": "nda",
+  "instructions": "Mutual NDA between Acme Inc (123 Market St, SF) and Beta LLC (55 Harbor Rd, NY), effective today, 2-year term.",
+  "api_key": "AIzaSyYourPersonalGeminiKeyHere",
+  "provider": "Gemini",
+  "model": "gemini-flash-lite-latest"
+}`;
+
+const DRAFT_CURL_OWN_KEY = `curl -X POST https://your-server/api/documents/draft \\
+  -H "X-Document-Api-Key: pixous_your_key_here" \\
+  -H "X-LLM-ApiKey: AIzaSyYourPersonalGeminiKeyHere" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "template_id": "nda",
+    "instructions": "Mutual NDA between Acme Inc and Beta LLC, effective today.",
+    "api_key": "AIzaSyYourPersonalGeminiKeyHere",
+    "provider": "Gemini"
   }'`;
 
 const DRAFT_RESPONSE = `{
@@ -107,8 +142,10 @@ const GENERATE_RESPONSE = `{
 
 const DOWNLOAD_CURL = `curl -OJ "https://your-server/api/documents/DOC-20261028-4F2A9B1C/download?format=pdf"`;
 
-const JS_EXAMPLE = `const API_KEY = "pixous_your_key_here";
-const BASE_URL = "https://your-server/api";
+// Server Code Examples: Default
+const JS_EXAMPLE_DEFAULT = `// Node.js (Server-side Default)
+const API_KEY = process.env.PIXOUS_API_KEY;
+const BASE_URL = process.env.PIXOUS_BASE_URL || "http://localhost:5000/api";
 const HEADERS = { "X-Document-Api-Key": API_KEY, "Content-Type": "application/json" };
 
 async function draftDocument(templateId, instructions) {
@@ -139,23 +176,61 @@ async function generateDocument(documentId, formats = ["docx", "pdf"]) {
   });
   if (!res.ok) throw new Error(\`Generate failed: \${res.status}\`);
   return res.json();
-}
+}`;
 
-// Usage
-let draft = await draftDocument("nda", "Mutual NDA between Acme Inc and Beta LLC, effective today.");
-if (draft.status === "needs_information") {
-  const result = await fillMissingFields(draft.document_id, {
-    signatory: { name: "Jane Doe", designation: "General Counsel" },
+// Server Code Examples: Own Key
+const JS_EXAMPLE_OWN_KEY = `// Node.js (Server-side with Personal Gemini Key)
+const API_KEY = process.env.PIXOUS_API_KEY;
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
+const BASE_URL = process.env.PIXOUS_BASE_URL || "http://localhost:5000/api";
+
+const HEADERS = {
+  "X-Document-Api-Key": API_KEY,
+  "X-LLM-ApiKey": GEMINI_KEY,
+  "Content-Type": "application/json",
+};
+
+async function draftDocument(templateId, instructions) {
+  const res = await fetch(\`\${BASE_URL}/documents/draft\`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      template_id: templateId,
+      instructions,
+      api_key: GEMINI_KEY,
+      provider: "Gemini",
+      model: "gemini-flash-lite-latest",
+    }),
   });
-  draft.status = result.status;
+  if (!res.ok) throw new Error(\`Draft failed: \${res.status}\`);
+  return res.json();
 }
-const generated = await generateDocument(draft.document_id);
-console.log(generated.files); // [{ format, download_url }, ...]`;
 
-const PY_EXAMPLE = `import requests
+async function fillMissingFields(documentId, content) {
+  const res = await fetch(\`\${BASE_URL}/documents/\${documentId}/validate\`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error(\`Validate failed: \${res.status}\`);
+  return res.json();
+}
 
-API_KEY = "pixous_your_key_here"
-BASE_URL = "https://your-server/api"
+async function generateDocument(documentId, formats = ["docx", "pdf"]) {
+  const res = await fetch(\`\${BASE_URL}/documents/\${documentId}/generate\`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ formats }),
+  });
+  if (!res.ok) throw new Error(\`Generate failed: \${res.status}\`);
+  return res.json();
+}`;
+
+const PY_EXAMPLE_DEFAULT = `# Python (Server-side Default)
+import os, requests
+
+API_KEY = os.environ.get("PIXOUS_API_KEY")
+BASE_URL = os.environ.get("PIXOUS_BASE_URL", "http://localhost:5000/api")
 HEADERS = {"X-Document-Api-Key": API_KEY, "Content-Type": "application/json"}
 
 def draft_document(template_id, instructions):
@@ -183,32 +258,72 @@ def generate_document(document_id, formats=None):
         json={"formats": formats or ["docx", "pdf"]},
     )
     resp.raise_for_status()
+    return resp.json()`;
+
+const PY_EXAMPLE_OWN_KEY = `# Python (Server-side with Personal Gemini Key)
+import os, requests
+
+API_KEY = os.environ.get("PIXOUS_API_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+BASE_URL = os.environ.get("PIXOUS_BASE_URL", "http://localhost:5000/api")
+
+HEADERS = {
+    "X-Document-Api-Key": API_KEY,
+    "X-LLM-ApiKey": GEMINI_KEY,
+    "Content-Type": "application/json",
+}
+
+def draft_document(template_id, instructions):
+    resp = requests.post(
+        f"{BASE_URL}/documents/draft",
+        headers=HEADERS,
+        json={
+            "template_id": template_id,
+            "instructions": instructions,
+            "api_key": GEMINI_KEY,
+            "provider": "Gemini",
+            "model": "gemini-flash-lite-latest",
+        },
+    )
+    resp.raise_for_status()
     return resp.json()
 
-draft = draft_document("nda", "Mutual NDA between Acme Inc and Beta LLC, effective today.")
-if draft["status"] == "needs_information":
-    result = fill_missing_fields(draft["document_id"], {
-        "signatory": {"name": "Jane Doe", "designation": "General Counsel"},
-    })
-    draft["status"] = result["status"]
+def fill_missing_fields(document_id, content):
+    resp = requests.post(
+        f"{BASE_URL}/documents/{document_id}/validate",
+        headers=HEADERS,
+        json={"content": content},
+    )
+    resp.raise_for_status()
+    return resp.json()
 
-generated = generate_document(draft["document_id"])
-print(generated["files"])  # [{ "format": ..., "download_url": ... }, ...]`;
+def generate_document(document_id, formats=None):
+    resp = requests.post(
+        f"{BASE_URL}/documents/{document_id}/generate",
+        headers=HEADERS,
+        json={"formats": formats or ["docx", "pdf"]},
+    )
+    resp.raise_for_status()
+    return resp.json()`;
 
-const CSHARP_EXAMPLE = `using var client = new HttpClient { BaseAddress = new Uri("https://your-server/api/") };
+const CSHARP_EXAMPLE = `// .NET / C#
+using var client = new HttpClient { BaseAddress = new Uri("http://localhost:5000/api/") };
 client.DefaultRequestHeaders.Add("X-Document-Api-Key", "pixous_your_key_here");
+// Optional Own Key header:
+// client.DefaultRequestHeaders.Add("X-LLM-ApiKey", "AIzaSyYourPersonalGeminiKey");
 
 // 1. Draft content from instructions
 var draftBody = JsonContent.Create(new {
     template_id = "nda",
-    instructions = "Mutual NDA between Acme Inc and Beta LLC, effective today."
+    instructions = "Mutual NDA between Acme Inc and Beta LLC, effective today.",
+    // api_key = "AIzaSy..." // Optional per-request override
 });
 var draftResponse = await client.PostAsync("documents/draft", draftBody);
 draftResponse.EnsureSuccessStatusCode();
 var draft = await draftResponse.Content.ReadFromJsonAsync<JsonElement>();
 string documentId = draft.GetProperty("document_id").GetString()!;
 
-// 2. Fill in any missing required fields
+// 2. Fill in missing required fields
 if (draft.GetProperty("status").GetString() == "needs_information")
 {
     var validateBody = JsonContent.Create(new {
@@ -237,6 +352,15 @@ const ERROR_ROWS = [
 ];
 
 export default function DocumentGenerationGuide() {
+  const [draftMode, setDraftMode] = useState<KeyMode>("default");
+  const [codeMode, setCodeMode] = useState<KeyMode>("default");
+  const [codeLang, setCodeLang] = useState<Lang>("javascript");
+
+  function setAllModes(m: KeyMode) {
+    setDraftMode(m);
+    setCodeMode(m);
+  }
+
   return (
     <DocsShell
       eyebrow="Document Generation"
@@ -249,6 +373,40 @@ export default function DocumentGenerationGuide() {
       ]}
       sections={SECTIONS}
     >
+      {/* Global Quick Switcher Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-navy/20 bg-navy/5 p-4 shadow-xs">
+        <div>
+          <p className="text-xs font-semibold text-navy">Global Documentation View:</p>
+          <p className="text-xs text-gray-600">
+            Switch generation examples between <strong>Server Key (Default)</strong> and <strong>Own Key (BYOK Gemini)</strong>.
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-border-subtle bg-white p-1 shadow-xs">
+          <button
+            type="button"
+            onClick={() => setAllModes("default")}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              draftMode === "default"
+                ? "bg-navy text-white shadow-xs font-semibold"
+                : "text-gray-500 hover:text-navy"
+            }`}
+          >
+            Default (Server Key)
+          </button>
+          <button
+            type="button"
+            onClick={() => setAllModes("ownKey")}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              draftMode === "ownKey"
+                ? "bg-navy text-white shadow-xs font-semibold"
+                : "text-gray-500 hover:text-navy"
+            }`}
+          >
+            Own Key (BYOK Gemini)
+          </button>
+        </div>
+      </div>
+
       <DocsSectionCard id="authenticate" index={1} title="Authenticate">
         <p>Same as the rest of the API — send your key on every request:</p>
         <CodeBlock code="X-Document-Api-Key: pixous_your_key_here" />
@@ -258,6 +416,9 @@ export default function DocumentGenerationGuide() {
           or editing a key in <strong>API Access</strong> — a key without it gets a{" "}
           <InlineCode>403</InlineCode>.
         </DocsCallout>
+        <p className="text-xs text-gray-600 mt-2">
+          <strong>Own Key (BYOK):</strong> To power AI drafting with your personal Google Gemini or OpenAI key, pass <InlineCode>X-LLM-ApiKey: AIzaSy...</InlineCode> or the <InlineCode>api_key</InlineCode> body parameter.
+        </p>
       </DocsSectionCard>
 
       <DocsSectionCard id="workflow" index={2} title="The workflow">
@@ -268,7 +429,7 @@ export default function DocumentGenerationGuide() {
         </p>
         <ol className="list-decimal space-y-1 pl-5">
           <li>Register or upload a template (one-time setup per document type)</li>
-          <li>Draft content from a plain-language instruction</li>
+          <li>Draft content from a plain-language instruction (AI Powered)</li>
           <li>Validate the draft and fill in any missing required fields</li>
           <li>Generate DOCX / PDF output</li>
           <li>Download the file</li>
@@ -298,9 +459,19 @@ export default function DocumentGenerationGuide() {
               <td className="py-1">Defaults to the filename (lowercased, spaces/dashes → _)</td>
             </tr>
             <tr className="border-t border-gray-100">
-              <td className="py-1 pr-4 font-mono">title / description / document_type</td>
+              <td className="py-1 pr-4 font-mono">title</td>
               <td className="py-1 pr-4">No</td>
-              <td className="py-1">Human-readable metadata</td>
+              <td className="py-1">Human-readable title</td>
+            </tr>
+            <tr className="border-t border-gray-100">
+              <td className="py-1 pr-4 font-mono">description</td>
+              <td className="py-1 pr-4">No</td>
+              <td className="py-1">Short description</td>
+            </tr>
+            <tr className="border-t border-gray-100">
+              <td className="py-1 pr-4 font-mono">document_type</td>
+              <td className="py-1 pr-4">No</td>
+              <td className="py-1">Free-text category, e.g. "nda", "sow"</td>
             </tr>
             <tr className="border-t border-gray-100">
               <td className="py-1 pr-4 font-mono">schema_json</td>
@@ -309,45 +480,11 @@ export default function DocumentGenerationGuide() {
             </tr>
           </tbody>
         </table>
-        <p>
-          The parser scans the .docx for <strong>Word Content Controls</strong> (tagged or
-          aliased) and plain <InlineCode>{"{{field_name}}"}</InlineCode> text placeholders —
-          including dotted table columns like <InlineCode>{"{{line_items.description}}"}</InlineCode>{" "}
-          — and turns each into a schema section.
-        </p>
         <CodeBlock language="bash" code={UPLOAD_CURL} />
-        <DocsCallout>
-          <strong>Inspect without saving:</strong>{" "}
-          <InlineCode>POST /api/templates/inspect</InlineCode> runs the same parser and returns
-          the proposed template plus warnings/errors, without persisting anything — use it to
-          preview/tune a template before uploading.
-        </DocsCallout>
 
-        <p className="mt-4 font-medium text-gray-800">Or register a template by hand (JSON)</p>
+        <p className="font-medium text-gray-800 mt-5">Register a template by hand (JSON)</p>
         <EndpointPath method="POST" path="/api/templates" />
         <CodeBlock language="json" code={TEMPLATE_JSON} />
-
-        <p className="mt-4 font-medium text-gray-800">Other template endpoints</p>
-        <table className="w-full text-left text-xs">
-          <tbody>
-            <tr className="border-t border-gray-100">
-              <td className="py-2 pr-4"><EndpointPath method="GET" path="/api/templates" /></td>
-              <td className="py-2">List all registered templates</td>
-            </tr>
-            <tr className="border-t border-gray-100">
-              <td className="py-2 pr-4"><EndpointPath method="GET" path="/api/templates/{id}?version=N" /></td>
-              <td className="py-2">Get one template (optionally a specific version)</td>
-            </tr>
-            <tr className="border-t border-gray-100">
-              <td className="py-2 pr-4"><EndpointPath method="PUT" path="/api/templates/{id}" /></td>
-              <td className="py-2">Update an existing template's schema</td>
-            </tr>
-            <tr className="border-t border-gray-100">
-              <td className="py-2 pr-4"><EndpointPath method="GET" path="/api/templates/{id}/download" /></td>
-              <td className="py-2">Download the raw uploaded .docx for a template (no auth required)</td>
-            </tr>
-          </tbody>
-        </table>
       </DocsSectionCard>
 
       <DocsSectionCard id="section-types" index={4} title="Section types">
@@ -374,17 +511,30 @@ export default function DocumentGenerationGuide() {
       </DocsSectionCard>
 
       <DocsSectionCard id="draft" index={5} title="Draft content from instructions">
+        <KeyModeNavbar mode={draftMode} onChange={setDraftMode} />
         <EndpointPath method="POST" path="/api/documents/draft" />
         <p>
           Give the AI a plain-language instruction; it fills in as much of the template's schema
-          as it can and flags anything it couldn't determine. Provide either{" "}
-          <InlineCode>template_id</InlineCode> (a saved template) or an inline{" "}
-          <InlineCode>template_definition</InlineCode>.
+          as it can and flags anything it couldn't determine.
         </p>
-        <CodeBlock language="bash" code={DRAFT_CURL} />
-        <p className="text-xs font-medium text-gray-500">Response</p>
+
+        <p className="text-xs font-medium text-gray-500 mt-2">
+          {draftMode === "default" ? "Request Body (Server Key)" : "Request Body (Own Key Mode)"}
+        </p>
+        <CodeBlock
+          language="json"
+          code={draftMode === "default" ? DRAFT_REQUEST_DEFAULT : DRAFT_REQUEST_OWN_KEY}
+        />
+
+        <p className="text-xs font-medium text-gray-500 mt-3">cURL Request</p>
+        <CodeBlock
+          language="bash"
+          code={draftMode === "default" ? DRAFT_CURL_DEFAULT : DRAFT_CURL_OWN_KEY}
+        />
+
+        <p className="text-xs font-medium text-gray-500 mt-3">Response</p>
         <CodeBlock language="json" code={DRAFT_RESPONSE} />
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-gray-500 mt-1">
           <InlineCode>status</InlineCode> is <strong>needs_information</strong> (required fields
           missing — check <InlineCode>missing_fields</InlineCode> and go to Validate) or{" "}
           <strong>ready</strong> (skip straight to Generate). Save the returned{" "}
@@ -407,11 +557,6 @@ export default function DocumentGenerationGuide() {
           <strong>Date fields</strong> are auto-filled with the current UTC date if left empty —
           you don't need to supply them unless you want a specific date.
         </DocsCallout>
-        <p className="text-xs text-gray-500">
-          <strong>Preview at any time:</strong>{" "}
-          <InlineCode>GET /api/documents/{"{document_id}"}/preview</InlineCode> returns the current
-          content + markdown preview without changing anything.
-        </p>
       </DocsSectionCard>
 
       <DocsSectionCard id="generate" index={7} title="Generate the file(s)">
@@ -423,38 +568,32 @@ export default function DocumentGenerationGuide() {
         <CodeBlock language="json" code={GENERATE_REQUEST} />
         <p className="text-xs font-medium text-gray-500">Response</p>
         <CodeBlock language="json" code={GENERATE_RESPONSE} />
-        <DocsCallout>
-          <strong>DOCX rendering:</strong> if the template was created via{" "}
-          <InlineCode>/api/templates/upload</InlineCode> with a real .docx on file, the docx output
-          is produced by populating that original Word file's content controls/placeholders
-          directly — formatting, headers, and styling are preserved exactly. Otherwise docx is
-          generated from scratch using <InlineCode>presentation</InlineCode> settings. PDF is
-          always rendered independently from the structured content.
-        </DocsCallout>
-        <p className="text-xs text-gray-500">
-          You can call generate again later (e.g. after validating new edits) — it re-renders and
-          overwrites the stored files for that document_id.
-        </p>
       </DocsSectionCard>
 
       <DocsSectionCard id="download" index={8} title="Download">
         <EndpointPath method="GET" path="/api/documents/{document_id}/download?format=docx" />
         <p>
-          No authentication required — this is a direct file link, safe to hand to an end user or
+          No authentication required — direct file link, safe to hand to an end user or
           embed in an email. <InlineCode>format</InlineCode> is <InlineCode>docx</InlineCode>{" "}
-          (default) or <InlineCode>pdf</InlineCode>. Returns 404 if that format hasn't been
-          generated yet — call Generate first.
+          (default) or <InlineCode>pdf</InlineCode>.
         </p>
         <CodeBlock language="bash" code={DOWNLOAD_CURL} />
       </DocsSectionCard>
 
-      <DocsSectionCard id="code-examples" index={9} title="Code examples">
-        <p className="text-xs font-medium text-gray-500">JavaScript (fetch)</p>
-        <CodeBlock language="javascript" code={JS_EXAMPLE} />
-        <p className="text-xs font-medium text-gray-500">Python (requests)</p>
-        <CodeBlock language="python" code={PY_EXAMPLE} />
-        <p className="text-xs font-medium text-gray-500">C#</p>
-        <CodeBlock language="csharp" code={CSHARP_EXAMPLE} />
+      <DocsSectionCard id="code-examples" index={9} title="Server-side Code examples">
+        <KeyModeNavbar mode={codeMode} onChange={setCodeMode} />
+        <LanguageNavbar lang={codeLang} onChange={setCodeLang} langs={["javascript", "python", "csharp"]} />
+        <DocsCallout tone="info">
+          These examples run on your backend server (e.g. Node.js, Python, C#), where API keys can be safely retrieved from environment variables.
+        </DocsCallout>
+
+        {codeLang === "javascript" && (
+          <CodeBlock language="javascript" code={codeMode === "default" ? JS_EXAMPLE_DEFAULT : JS_EXAMPLE_OWN_KEY} />
+        )}
+        {codeLang === "python" && (
+          <CodeBlock language="python" code={codeMode === "default" ? PY_EXAMPLE_DEFAULT : PY_EXAMPLE_OWN_KEY} />
+        )}
+        {codeLang === "csharp" && <CodeBlock language="csharp" code={CSHARP_EXAMPLE} />}
       </DocsSectionCard>
 
       <DocsSectionCard id="errors" index={10} title="Error handling">
@@ -478,30 +617,18 @@ export default function DocumentGenerationGuide() {
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-gray-500">
-          Every error response is <InlineCode>{"{ error }"}</InlineCode> (validation failures also
-          include a <InlineCode>details</InlineCode> array).
-        </p>
       </DocsSectionCard>
 
       <DocsSectionCard id="good-practices" index={11} title="Good practices">
-        <ul className="list-disc space-y-1 pl-5">
+        <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
           <li>
-            <strong>Upload the real .docx as the template</strong> when one exists — it gives you
-            pixel-perfect DOCX output and lets the parser infer the schema for you.
+            <strong>Keep keys server-side:</strong> Never expose <InlineCode>X-Document-Api-Key</InlineCode> or <InlineCode>X-LLM-ApiKey</InlineCode> in browser code.
           </li>
           <li>
-            <strong>Use inspect before upload</strong> when tuning a new template, so you can see
-            detected sections/warnings and adjust the source .docx before saving.
+            <strong>Inspect before uploading:</strong> Use <InlineCode>POST /api/templates/inspect</InlineCode> to test Word templates and placeholder detection without persisting.
           </li>
           <li>
-            <strong>Loop validate until is_valid: true</strong> rather than calling generate
-            speculatively — generate doesn't block on missing fields, so an incomplete draft will
-            render with gaps.
-          </li>
-          <li>
-            <strong>Re-use the document_id</strong> across validate/generate/download calls for the
-            same document instance; start a new draft call only for a genuinely new document.
+            <strong>Check needs_information:</strong> Always verify if <InlineCode>status === "needs_information"</InlineCode> so your application can prompt the user for any missing facts before generating output files.
           </li>
         </ul>
       </DocsSectionCard>

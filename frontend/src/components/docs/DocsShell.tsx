@@ -168,3 +168,85 @@ export function EndpointPath({ method, path }: { method: string; path: string })
     </div>
   );
 }
+
+export type KeyMode = "default" | "ownKey";
+
+export function KeyModeNavbar({
+  mode,
+  onChange,
+}: {
+  mode: KeyMode;
+  onChange: (m: KeyMode) => void;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-app-bg px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-2 w-2 rounded-full bg-navy/60" />
+        <span className="text-xs font-semibold text-navy">Implementation Mode:</span>
+      </div>
+      <div className="inline-flex rounded-lg border border-border-subtle bg-white p-0.5 shadow-xs">
+        <button
+          type="button"
+          onClick={() => onChange("default")}
+          className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
+            mode === "default"
+              ? "bg-navy text-white shadow-xs font-semibold"
+              : "text-gray-500 hover:text-navy"
+          }`}
+        >
+          Default (Server Key)
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange("ownKey")}
+          className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
+            mode === "ownKey"
+              ? "bg-navy text-white shadow-xs font-semibold"
+              : "text-gray-500 hover:text-navy"
+          }`}
+        >
+          Own Key (BYOK Gemini)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export type Lang = "python" | "javascript" | "csharp" | "curl";
+
+const LANGUAGE_LABELS: Record<Lang, string> = {
+  python: "Python",
+  javascript: "JavaScript (Node.js)",
+  csharp: "C# (.NET)",
+  curl: "cURL (Bash)",
+};
+
+export function LanguageNavbar({
+  lang,
+  onChange,
+  langs = ["python", "javascript", "csharp", "curl"],
+}: {
+  lang: Lang;
+  onChange: (l: Lang) => void;
+  langs?: Lang[];
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-border-subtle pb-2">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mr-2">Language:</span>
+      {langs.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onChange(id)}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+            lang === id
+              ? "bg-navy text-white font-semibold shadow-xs"
+              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }`}
+        >
+          {LANGUAGE_LABELS[id]}
+        </button>
+      ))}
+    </div>
+  );
+}

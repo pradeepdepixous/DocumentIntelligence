@@ -1,6 +1,8 @@
+using System.Net.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using PixousDocIntelligence.Application.Options;
 using PixousDocIntelligence.Application.Orchestration;
 using PixousDocIntelligence.Persistence.Repositories;
 using PixousDocIntelligence.Services.Accounts;
@@ -17,15 +19,19 @@ public class DocumentProcessingBackgroundWorker : BackgroundService
     private readonly IDocumentJobQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<DocumentProcessingBackgroundWorker> _logger;
+    private readonly ProcessingOptions _options;
+    private readonly Random _jitterRandom = new();
 
     public DocumentProcessingBackgroundWorker(
         IDocumentJobQueue queue,
         IServiceScopeFactory scopeFactory,
-        ILogger<DocumentProcessingBackgroundWorker> logger)
+        ILogger<DocumentProcessingBackgroundWorker> logger,
+        ProcessingOptions options)
     {
         _queue = queue;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _options = options;
     }
 
     private const int MaxConcurrentJobs = 6;
@@ -69,8 +75,10 @@ public class DocumentProcessingBackgroundWorker : BackgroundService
 
     private async Task ProcessJobAsync(DocumentJobWorkItem item, CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Processing job '{JobId}' for document '{DocumentId}' [Campaign: '{CampaignId}']", 
-            item.JobId, item.DocumentId, item.CampaignId ?? "none");
+        _logger.LogInformation("Processing job '{JobId}' for document '{DocumentId}' [Campaign: '{CampaignId}'] (attempt {Attempt})",
+            item.JobId, item.DocumentId, item.CampaignId ?? "none", item.AttemptCount + 1);
+
+        bool retryScheduled = false;
 
         try
         {
@@ -112,30 +120,99 @@ public class DocumentProcessingBackgroundWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Background processing failed for job '{JobId}'", item.JobId);
+            _logger.LogError(ex, "Background processing failed for job '{JobId}' (attempt {Attempt})", item.JobId, item.AttemptCount + 1);
+
+            bool isRetryableError = IsRetryableException(ex);
+            bool retriesRemain = item.AttemptCount < _options.JobRetry.MaxRetries;
+
             try
             {
-                using var errScope = _scopeFactory.CreateScope();
-                var repo = errScope.ServiceProvider.GetRequiredService<IDocumentProcessingRepository>();
-                await repo.UpdateJobStatusAsync(item.JobId, "Failed", ex.Message, CancellationToken.None);
-
-                if (!string.IsNullOrWhiteSpace(item.CampaignId))
+                if (isRetryableError && retriesRemain)
                 {
-                    var campaignStorage = errScope.ServiceProvider.GetRequiredService<PixousDocIntelligence.Services.Campaigns.ICampaignStorageService>();
-                    await campaignStorage.MarkBidFailedAsync(item.CampaignId, item.BidId ?? item.JobId, ex.Message, CancellationToken.None);
+                    item.AttemptCount++;
+                    TimeSpan delay = ComputeRetryDelay(item.AttemptCount);
+                    DateTime nextAttemptAt = DateTime.UtcNow.Add(delay);
+
+                    using var retryScope = _scopeFactory.CreateScope();
+                    var retryRepo = retryScope.ServiceProvider.GetRequiredService<IDocumentProcessingRepository>();
+                    await retryRepo.MarkJobRetryScheduledAsync(item.JobId, item.AttemptCount, nextAttemptAt, ex.Message, CancellationToken.None);
+
+                    _logger.LogWarning(
+                        "Job '{JobId}' hit a transient error — scheduling retry {Attempt}/{MaxRetries} in {DelaySeconds:F0}s.",
+                        item.JobId, item.AttemptCount, _options.JobRetry.MaxRetries, delay.TotalSeconds);
+
+                    // Schedule the retry for later instead of blocking this worker's concurrency
+                    // slot: this method is about to return, which releases the slot immediately.
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(delay, stoppingToken);
+                            await _queue.EnqueueAsync(item, CancellationToken.None);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // App is shutting down; drop the retry rather than enqueue into a dead worker.
+                        }
+                    }, CancellationToken.None);
+
+                    retryScheduled = true;
+                }
+                else
+                {
+                    using var errScope = _scopeFactory.CreateScope();
+                    var repo = errScope.ServiceProvider.GetRequiredService<IDocumentProcessingRepository>();
+                    await repo.UpdateJobStatusAsync(item.JobId, "Failed", ex.Message, CancellationToken.None);
+
+                    if (!string.IsNullOrWhiteSpace(item.CampaignId))
+                    {
+                        var campaignStorage = errScope.ServiceProvider.GetRequiredService<PixousDocIntelligence.Services.Campaigns.ICampaignStorageService>();
+                        await campaignStorage.MarkBidFailedAsync(item.CampaignId, item.BidId ?? item.JobId, ex.Message, CancellationToken.None);
+                    }
                 }
             }
             catch (Exception statusEx)
             {
-                _logger.LogWarning(statusEx, "Failed to record failure status for job '{JobId}'", item.JobId);
+                _logger.LogWarning(statusEx, "Failed to record failure/retry status for job '{JobId}'", item.JobId);
             }
         }
         finally
         {
-            if (!string.IsNullOrWhiteSpace(item.TempFilePath) && File.Exists(item.TempFilePath))
+            // Keep the staged upload around when a retry is pending — the retried attempt needs
+            // the same file on disk. Only clean up once the job has reached a terminal state.
+            if (!retryScheduled && !string.IsNullOrWhiteSpace(item.TempFilePath) && File.Exists(item.TempFilePath))
             {
                 try { File.Delete(item.TempFilePath); } catch { /* ignore lock */ }
             }
         }
+    }
+
+    /// <summary>
+    /// Distinguishes transient failures (worth retrying the whole job) from permanent ones
+    /// (bad input, unsupported format, etc.) that would just fail identically again.
+    /// </summary>
+    private static bool IsRetryableException(Exception ex)
+    {
+        return ex switch
+        {
+            HttpRequestException => true,
+            TaskCanceledException => true,
+            TimeoutException => true,
+            IOException => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Bounded exponential backoff with jitter: BaseDelaySeconds * 2^(attempt-1), capped at
+    /// MaxDelaySeconds, randomized to 0.5x-1.5x so many simultaneously-failing jobs don't all
+    /// retry at the exact same instant.
+    /// </summary>
+    private TimeSpan ComputeRetryDelay(int attemptCount)
+    {
+        double rawDelaySeconds = _options.JobRetry.BaseDelaySeconds * Math.Pow(2, attemptCount - 1);
+        double cappedDelaySeconds = Math.Min(rawDelaySeconds, _options.JobRetry.MaxDelaySeconds);
+        double jitterFactor = 0.5 + _jitterRandom.NextDouble();
+        return TimeSpan.FromSeconds(cappedDelaySeconds * jitterFactor);
     }
 }

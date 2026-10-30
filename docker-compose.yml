@@ -13,6 +13,42 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pixous_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DocumentIntelligence: "Host=postgres;Port=5432;Database=pixous_doc_intelligence;Username=postgres;Password=postgrespassword"
+      Gemini__ApiKey: "${GEMINI_API_KEY:-}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - api_output:/app/output
+      - api_uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pixous_frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
 
 volumes:
   postgres_data:
+  api_output:
+  api_uploads:

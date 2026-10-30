@@ -19,6 +19,18 @@ public interface IDocumentProcessingRepository
     Task<ExtractionJobEntity?> GetJobAsync(string jobId, CancellationToken cancellationToken = default);
     Task UpdateJobStatusAsync(string jobId, string status, string? errorMessage = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Records that a job failed with a retryable error and has been re-queued for a later
+    /// attempt: sets Status to "RetryWait", stamps the attempt count and the earliest time the
+    /// retry should run, and keeps the error for diagnostics.
+    /// </summary>
+    Task MarkJobRetryScheduledAsync(
+        string jobId,
+        int attemptCount,
+        DateTime nextAttemptAt,
+        string lastError,
+        CancellationToken cancellationToken = default);
+
     Task SaveBatchManifestAsync(BatchManifest manifest, CancellationToken cancellationToken = default);
     Task<BatchManifest?> GetBatchManifestAsync(string jobId, CancellationToken cancellationToken = default);
     Task UpdateBatchStatusAsync(

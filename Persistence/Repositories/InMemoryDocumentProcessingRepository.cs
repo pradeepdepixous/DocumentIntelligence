@@ -56,6 +56,24 @@ public class InMemoryDocumentProcessingRepository : IDocumentProcessingRepositor
         return Task.CompletedTask;
     }
 
+    public Task MarkJobRetryScheduledAsync(
+        string jobId,
+        int attemptCount,
+        DateTime nextAttemptAt,
+        string lastError,
+        CancellationToken cancellationToken = default)
+    {
+        if (_jobs.TryGetValue(jobId, out var job))
+        {
+            job.Status = "RetryWait";
+            job.AttemptCount = attemptCount;
+            job.NextAttemptAt = nextAttemptAt;
+            job.ErrorMessage = lastError;
+            job.UpdatedAt = DateTime.UtcNow;
+        }
+        return Task.CompletedTask;
+    }
+
     public Task SaveBatchManifestAsync(BatchManifest manifest, CancellationToken cancellationToken = default)
     {
         _manifests[manifest.JobId] = manifest;

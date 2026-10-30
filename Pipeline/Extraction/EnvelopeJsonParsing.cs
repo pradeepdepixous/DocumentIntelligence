@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Pipeline.Batching;
@@ -242,24 +243,40 @@ internal static class EnvelopeJsonParsing
     /// </summary>
     public static List<PageMarkdownContent> ParseMarkdownPages(JsonElement root, BatchDescriptor batch)
     {
-        var pages = new List<PageMarkdownContent>();
+        var pagesByNumber = new Dictionary<int, PageMarkdownContent>();
 
         if (root.TryGetProperty("pages", out var pagesElem) && pagesElem.ValueKind == JsonValueKind.Array)
         {
             foreach (var pElem in pagesElem.EnumerateArray())
             {
-                int pageNum = batch.StartPage;
-                if (pElem.TryGetProperty("page_number", out var pn) &&
-                    pn.ValueKind == JsonValueKind.Number &&
-                    pn.TryGetInt32(out int p))
+                if (!pElem.TryGetProperty("page_number", out var pn) ||
+                    pn.ValueKind != JsonValueKind.Number ||
+                    !pn.TryGetInt32(out int pageNum))
                 {
-                    pageNum = Math.Clamp(p, batch.StartPage, batch.EndPage);
+                    // No usable page number — there's nothing safe to attribute this content to.
+                    continue;
+                }
+
+                if (pageNum < batch.StartPage || pageNum > batch.EndPage)
+                {
+                    // The model reported a page number outside this batch's actual range.
+                    // Clamping it to the nearest boundary page would silently attribute the
+                    // wrong content to a real page (and could win over correct content during
+                    // stitching, which keeps whichever transcript is longer). Drop it instead —
+                    // the true page then shows up as missing and gets retried/flagged like any
+                    // other incomplete page.
+                    continue;
                 }
 
                 string md = string.Empty;
                 if (pElem.TryGetProperty("markdown", out var m) && m.ValueKind == JsonValueKind.String)
                 {
                     md = m.GetString() ?? string.Empty;
+                }
+
+                if (string.IsNullOrWhiteSpace(md))
+                {
+                    continue;
                 }
 
                 bool hasTables = false;
@@ -273,19 +290,23 @@ internal static class EnvelopeJsonParsing
                     hasTables = true;
                 }
 
-                if (!string.IsNullOrWhiteSpace(md))
+                var page = new PageMarkdownContent
                 {
-                    pages.Add(new PageMarkdownContent
-                    {
-                        PageNumber = pageNum,
-                        Markdown = md.Trim(),
-                        HasTables = hasTables
-                    });
+                    PageNumber = pageNum,
+                    Markdown = md.Trim(),
+                    HasTables = hasTables
+                };
+
+                // The model can emit the same page number twice in one response; keep whichever
+                // transcript is more complete instead of silently taking the last one.
+                if (!pagesByNumber.TryGetValue(pageNum, out var existing) || page.Markdown.Length > existing.Markdown.Length)
+                {
+                    pagesByNumber[pageNum] = page;
                 }
             }
         }
 
-        return pages;
+        return pagesByNumber.Values.OrderBy(p => p.PageNumber).ToList();
     }
 
     /// <summary>

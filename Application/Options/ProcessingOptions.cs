@@ -8,6 +8,7 @@ public class ProcessingOptions
     public BatchingConfig Batching { get; set; } = new();
     public VerificationConfig Verification { get; set; } = new();
     public StorageConfig Storage { get; set; } = new();
+    public JobRetryConfig JobRetry { get; set; } = new();
 }
 
 public class OpenAiConfig
@@ -29,6 +30,28 @@ public class BatchingConfig
     public int SmallDocThreshold { get; set; } = 4;
     public int SmallDocBatchSize { get; set; } = 4;
     public int SmallDocOverlapPages { get; set; } = 0;
+
+    /// <summary>
+    /// Caps the total number of extra extraction calls (same-size retries plus split-induced
+    /// sub-batch extractions) spent recovering incomplete markdown transcripts across an entire
+    /// document. Once exhausted, any batch still incomplete is accepted as-is and left for the
+    /// usual missing/unclear-page review flagging, instead of continuing to retry or split.
+    /// Bounds worst-case API cost/latency on a document where many batches are persistently bad.
+    /// </summary>
+    public int MaxRecoveryCallsPerDocument { get; set; } = 40;
+}
+
+/// <summary>
+/// Controls whole-job retry behavior in the background worker: when a job throws a transient
+/// error (as opposed to returning an incomplete-but-successful extraction, which the batching
+/// recovery budget handles separately), it is re-queued with exponential backoff instead of
+/// being marked Failed immediately.
+/// </summary>
+public class JobRetryConfig
+{
+    public int MaxRetries { get; set; } = 3;
+    public int BaseDelaySeconds { get; set; } = 5;
+    public int MaxDelaySeconds { get; set; } = 120;
 }
 
 public class VerificationConfig

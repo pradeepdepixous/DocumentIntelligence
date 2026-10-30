@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { apiFetch, ApiError } from "../lib/apiClient";
 import type { AskResponse, SummarizeResponse } from "../lib/documentTypes";
+import { MarkdownView } from "./MarkdownView";
 
 export function AskPanel({ jobId }: { jobId: string }) {
   const [question, setQuestion] = useState("");
@@ -48,11 +49,11 @@ export function AskPanel({ jobId }: { jobId: string }) {
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       {answer && (
-        <div className="space-y-2 rounded-lg border border-border-subtle bg-app-bg p-4 text-sm">
+        <div className="space-y-3 rounded-lg border border-border-subtle bg-app-bg p-4 text-sm">
           {!answer.isFoundInDocument && (
             <p className="text-xs font-medium text-amber-700">Not confidently found in the document — treat with caution.</p>
           )}
-          <p className="text-gray-900">{answer.answer}</p>
+          <MarkdownView content={answer.answer} />
           {answer.citations?.length > 0 && (
             <div className="space-y-1 border-t border-border-subtle pt-2">
               {answer.citations.map((c, i) => (
@@ -125,7 +126,7 @@ export function SummarizePanel({ jobId }: { jobId: string }) {
 
       {summary && (
         <div className="rounded-lg border border-border-subtle bg-app-bg p-4 text-sm text-gray-700">
-          <p className="whitespace-pre-wrap">{summary.summary}</p>
+          <MarkdownView content={summary.summary} />
         </div>
       )}
     </div>

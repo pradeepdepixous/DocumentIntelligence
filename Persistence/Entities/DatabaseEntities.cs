@@ -66,6 +66,12 @@ public class ExtractionJobEntity
     [Column("error_message")]
     public string? ErrorMessage { get; set; }
 
+    [Column("attempt_count")]
+    public int AttemptCount { get; set; } = 0;
+
+    [Column("next_attempt_at")]
+    public DateTime? NextAttemptAt { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

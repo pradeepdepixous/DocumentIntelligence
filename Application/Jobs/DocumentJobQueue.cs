@@ -21,6 +21,13 @@ public class DocumentJobWorkItem
     public string? BidId { get; set; }
     public string? SourceFileName { get; set; }
     public DateTime QueuedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Number of whole-job processing attempts already made for this work item (0 for the first
+    /// attempt). Incremented by the background worker before each scheduled retry so the retry
+    /// count travels with the in-memory work item across re-enqueues.
+    /// </summary>
+    public int AttemptCount { get; set; } = 0;
 }
 
 public interface IDocumentJobQueue

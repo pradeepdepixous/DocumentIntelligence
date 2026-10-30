@@ -1,4 +1,4 @@
-using System.Text;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Domain.Planning;
@@ -45,54 +45,69 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
         var activeStrategy = _strategy ?? ExtractionStrategyResolver.Resolve(plan);
         var (systemInstruction, userPrompt) = activeStrategy.BuildPrompts(batchDescriptor, plan);
 
-        string base64Data = Convert.ToBase64String(batchPdfBytes);
-
-        var requestPayload = new
-        {
-            systemInstruction = new
-            {
-                parts = new[] { new { text = systemInstruction } }
-            },
-            contents = new[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = new object[]
-                    {
-                        new
-                        {
-                            inlineData = new
-                            {
-                                mimeType = "application/pdf",
-                                data = base64Data
-                            }
-                        },
-                        new
-                        {
-                            text = userPrompt
-                        }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                responseMimeType = "application/json",
-                temperature = 0.1
-            }
-        };
+        // Written directly as UTF-8 JSON bytes via Utf8JsonWriter.WriteBase64String, which
+        // base64-encodes batchPdfBytes straight into the output buffer. This avoids allocating
+        // a separate base64 string and a separate serialized JSON string (each ~1.33x the PDF
+        // batch size) on top of the raw bytes, which otherwise peaks at ~4-5x the batch size
+        // for every extraction call.
+        byte[] requestBytes = BuildRequestPayload(systemInstruction, userPrompt, batchPdfBytes);
 
         string endpoint = $"{GeminiBaseUrl}/{_modelName}:generateContent?key={_apiKey}";
-        string requestJson = JsonSerializer.Serialize(requestPayload);
 
         // Execute with bounded exponential backoff
-        string responseJson = await ExecuteWithRetryAsync(endpoint, requestJson, cancellationToken);
+        string responseJson = await ExecuteWithRetryAsync(endpoint, requestBytes, cancellationToken);
         string extractedJson = ExtractCandidateText(responseJson);
 
         return activeStrategy.ParseEnvelope(extractedJson, batchDescriptor, plan);
     }
 
-    private async Task<string> ExecuteWithRetryAsync(string endpoint, string requestJson, CancellationToken cancellationToken)
+    private static byte[] BuildRequestPayload(string systemInstruction, string userPrompt, byte[] pdfBytes)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+
+            writer.WriteStartObject("systemInstruction");
+            writer.WriteStartArray("parts");
+            writer.WriteStartObject();
+            writer.WriteString("text", systemInstruction);
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+
+            writer.WriteStartArray("contents");
+            writer.WriteStartObject();
+            writer.WriteString("role", "user");
+            writer.WriteStartArray("parts");
+
+            writer.WriteStartObject();
+            writer.WriteStartObject("inlineData");
+            writer.WriteString("mimeType", "application/pdf");
+            writer.WriteBase64String("data", pdfBytes);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+
+            writer.WriteStartObject();
+            writer.WriteString("text", userPrompt);
+            writer.WriteEndObject();
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+
+            writer.WriteStartObject("generationConfig");
+            writer.WriteString("responseMimeType", "application/json");
+            writer.WriteNumber("temperature", 0.1);
+            writer.WriteEndObject();
+
+            writer.WriteEndObject();
+        }
+
+        return stream.ToArray();
+    }
+
+    private async Task<string> ExecuteWithRetryAsync(string endpoint, byte[] requestBytes, CancellationToken cancellationToken)
     {
         int maxRetries = 4;
         int delayMs = 1500;
@@ -101,8 +116,9 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
-                Content = new StringContent(requestJson, Encoding.UTF8, "application/json")
+                Content = new ByteArrayContent(requestBytes)
             };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
             HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
             string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);

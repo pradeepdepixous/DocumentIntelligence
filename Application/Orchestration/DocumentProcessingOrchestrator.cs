@@ -171,6 +171,9 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 : new Pipeline.Extraction.GeminiBatchExtractor(request.ApiKey ?? _options.Gemini.ApiKey, llmClient.ModelName, strategy: strategy);
 
             var batchEnvelopes = new List<DocumentEnvelope>();
+            var recoveryBudget = new RecoveryBudget { RemainingCalls = _options.Batching.MaxRecoveryCallsPerDocument };
+
+            using var batchSource = _batchScheduler.OpenBatchSource(request.DocumentPath);
 
             foreach (var batch in manifest.Batches)
             {
@@ -179,8 +182,8 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
 
                 try
                 {
-                    byte[] batchBytes = await _batchScheduler.ExtractBatchBytesAsync(request.DocumentPath, batch, cancellationToken);
-                    var envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+                    var envelope = await ExtractBatchWithRecoveryAsync(
+                        batchSource, batch, batchExtractor, plan, isMarkdownMode, recoveryBudget, progress, cancellationToken);
                     batchEnvelopes.Add(envelope);
                     batchWatch.Stop();
 
@@ -241,40 +244,69 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 cancellationToken);
 
             // In markdown mode without structured items, verify transcript completeness
-            if (stitchedEnvelope.Items.Count == 0 && stitchedEnvelope.Pages.Count > 0)
+            if (stitchedEnvelope.Items.Count == 0)
             {
-                var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
-                var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
-
-                if (missingPages.Count > 0)
+                if (stitchedEnvelope.Pages.Count == 0)
                 {
                     verificationReport.ReviewTasks.Add(new ReviewTask
                     {
                         JobId = job.JobId,
                         FieldKey = "(none)",
-                        PageNumber = missingPages[0],
+                        PageNumber = 1,
                         Reason = "incomplete_transcription",
                         ReportedConfidence = 0,
                         SourceQuote = string.Empty,
-                        ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
-                                         "This usually means the extraction model's response for this run was malformed or incomplete — " +
+                        ReviewerNotes = "No transcript pages were returned for this document at all. " +
+                                         "This usually means the extraction model's response for this run was malformed or empty — " +
                                          "retrying the same document is the first thing to try."
                     });
                 }
+                else
+                {
+                    var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
+                    var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
+
+                    if (missingPages.Count > 0)
+                    {
+                        verificationReport.ReviewTasks.Add(new ReviewTask
+                        {
+                            JobId = job.JobId,
+                            FieldKey = "(none)",
+                            PageNumber = missingPages[0],
+                            Reason = "incomplete_transcription",
+                            ReportedConfidence = 0,
+                            SourceQuote = string.Empty,
+                            ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
+                                             "This usually means the extraction model's response for this run was malformed or incomplete — " +
+                                             "retrying the same document is the first thing to try."
+                        });
+                    }
+                }
             }
 
-            if (string.IsNullOrWhiteSpace(stitchedEnvelope.DocumentSummary) && stitchedEnvelope.Items.Count == 0)
+            // Flag any page where the model marked its own transcription as uncertain, so a human
+            // can check the source image for that region instead of trusting the text silently.
+            if (isMarkdownMode)
             {
-                verificationReport.ReviewTasks.Add(new ReviewTask
+                var unclearPages = stitchedEnvelope.Pages
+                    .Where(p => p.Markdown.Contains("[unclear]", StringComparison.OrdinalIgnoreCase))
+                    .Select(p => p.PageNumber)
+                    .ToList();
+
+                if (unclearPages.Count > 0)
                 {
-                    JobId = job.JobId,
-                    FieldKey = "(none)",
-                    PageNumber = 1,
-                    Reason = "incomplete_transcription",
-                    ReportedConfidence = 0,
-                    SourceQuote = string.Empty,
-                    ReviewerNotes = "No document summary was generated for this run. Retrying the same document is the first thing to try."
-                });
+                    verificationReport.ReviewTasks.Add(new ReviewTask
+                    {
+                        JobId = job.JobId,
+                        FieldKey = "(none)",
+                        PageNumber = unclearPages[0],
+                        Reason = "unclear_content",
+                        ReportedConfidence = 0,
+                        SourceQuote = string.Empty,
+                        ReviewerNotes = $"Page(s) {string.Join(", ", unclearPages)} contain one or more [unclear] markers where the model " +
+                                         "could not confidently read the source content. Review the original page image for these sections."
+                    });
+                }
             }
 
             // Persist stitched records and review tasks to repository
@@ -321,5 +353,153 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             await _repository.UpdateJobStatusAsync(job.JobId, "Failed", ex.Message, cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Extracts a batch and, in markdown mode, recovers from an incomplete transcript (missing or
+    /// blank pages) by retrying the same page range, then by halving it into smaller sub-batches
+    /// (down to a single page) until each slice comes back complete or can no longer be split.
+    /// Non-markdown modes and transient transport failures are left to the caller/extractor as before.
+    /// </summary>
+    private async Task<DocumentEnvelope> ExtractBatchWithRecoveryAsync(
+        Pipeline.Batching.IPdfBatchSource batchSource,
+        BatchDescriptor batch,
+        Pipeline.Extraction.IBatchExtractor batchExtractor,
+        ExtractionPlan plan,
+        bool isMarkdownMode,
+        RecoveryBudget budget,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        const int maxSameSizeRetries = 1;
+
+        byte[] batchBytes = await batchSource.ExtractBatchBytesAsync(batch, cancellationToken);
+        var envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+
+        if (!isMarkdownMode || IsTranscriptionComplete(envelope, batch))
+        {
+            return envelope;
+        }
+
+        for (int attempt = 1; attempt <= maxSameSizeRetries; attempt++)
+        {
+            if (budget.RemainingCalls <= 0)
+            {
+                progress?.Report($"  ↳ {batch.BatchId} (Pages {batch.StartPage}..{batch.EndPage}) is incomplete, but the document-wide " +
+                                  "recovery budget is exhausted — accepting it as-is and flagging it for review.");
+                return envelope;
+            }
+
+            budget.RemainingCalls--;
+            progress?.Report($"  ↳ {batch.BatchId} (Pages {batch.StartPage}..{batch.EndPage}) came back incomplete — " +
+                              $"retrying (attempt {attempt}, {budget.RemainingCalls} recovery calls left)...");
+            batch.RetryCount++;
+            envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+
+            if (IsTranscriptionComplete(envelope, batch))
+            {
+                return envelope;
+            }
+        }
+
+        if (batch.PageCount <= 1)
+        {
+            // Can't split a single page any further — hand back the best result we have;
+            // the caller's completeness checks will flag the remaining gaps for human review.
+            return envelope;
+        }
+
+        if (budget.RemainingCalls < 2)
+        {
+            // Splitting always costs two mandatory sub-batch extractions; don't start one we
+            // can't afford to finish.
+            progress?.Report($"  ↳ {batch.BatchId} still incomplete, but the document-wide recovery budget is exhausted — " +
+                              "accepting the best result instead of splitting further.");
+            return envelope;
+        }
+
+        progress?.Report($"  ↳ {batch.BatchId} still incomplete after retries — splitting Pages {batch.StartPage}..{batch.EndPage} " +
+                          $"into smaller slices ({budget.RemainingCalls} recovery calls left)...");
+
+        int midpoint = batch.StartPage + (batch.PageCount / 2) - 1;
+        var firstHalf = new BatchDescriptor
+        {
+            BatchId = $"{batch.BatchId}-A",
+            JobId = batch.JobId,
+            DocumentId = batch.DocumentId,
+            SourceDocumentChecksum = batch.SourceDocumentChecksum,
+            StartPage = batch.StartPage,
+            EndPage = midpoint,
+            Status = BatchStatus.Pending
+        };
+        var secondHalf = new BatchDescriptor
+        {
+            BatchId = $"{batch.BatchId}-B",
+            JobId = batch.JobId,
+            DocumentId = batch.DocumentId,
+            SourceDocumentChecksum = batch.SourceDocumentChecksum,
+            StartPage = midpoint + 1,
+            EndPage = batch.EndPage,
+            Status = BatchStatus.Pending
+        };
+
+        // Charge the two mandatory first-attempt extractions the split is about to make; any
+        // further retries/splits within each half are charged separately as they happen.
+        budget.RemainingCalls -= 2;
+
+        var firstEnvelope = await ExtractBatchWithRecoveryAsync(batchSource, firstHalf, batchExtractor, plan, isMarkdownMode, budget, progress, cancellationToken);
+        var secondEnvelope = await ExtractBatchWithRecoveryAsync(batchSource, secondHalf, batchExtractor, plan, isMarkdownMode, budget, progress, cancellationToken);
+
+        batch.RetryCount += firstHalf.RetryCount + secondHalf.RetryCount;
+
+        return MergeSplitEnvelopes(batch, firstEnvelope, secondEnvelope);
+    }
+
+    /// <summary>
+    /// Shared, mutable call budget passed by reference through one document's recovery
+    /// recursion tree, so every batch's retries/splits draw from the same document-wide cap.
+    /// </summary>
+    private sealed class RecoveryBudget
+    {
+        public int RemainingCalls;
+    }
+
+    private static bool IsTranscriptionComplete(DocumentEnvelope envelope, BatchDescriptor batch)
+    {
+        var nonEmptyPages = envelope.Pages
+            .Where(p => !string.IsNullOrWhiteSpace(p.Markdown))
+            .Select(p => p.PageNumber)
+            .ToHashSet();
+
+        for (int pageNumber = batch.StartPage; pageNumber <= batch.EndPage; pageNumber++)
+        {
+            if (!nonEmptyPages.Contains(pageNumber))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static DocumentEnvelope MergeSplitEnvelopes(BatchDescriptor originalBatch, DocumentEnvelope first, DocumentEnvelope second)
+    {
+        var merged = new DocumentEnvelope
+        {
+            DocumentId = originalBatch.DocumentId,
+            JobId = originalBatch.JobId,
+            BatchId = originalBatch.BatchId,
+            SchemaVersion = Math.Max(first.SchemaVersion, second.SchemaVersion),
+            CreatedAt = DateTime.UtcNow
+        };
+
+        merged.Pages.AddRange(first.Pages);
+        merged.Pages.AddRange(second.Pages);
+        merged.Items.AddRange(first.Items);
+        merged.Items.AddRange(second.Items);
+        merged.Tables.AddRange(first.Tables);
+        merged.Tables.AddRange(second.Tables);
+
+        return merged;
     }
 }

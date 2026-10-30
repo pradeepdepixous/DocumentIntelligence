@@ -24,6 +24,10 @@ Grant `generate` when creating or editing a key in **API Access** — it's separ
 instead. A signed-in portal session has it implicitly. A key without it gets a `403` on every
 endpoint in this guide.
 
+> **Bring Your Own LLM Key (BYOK):**
+> AI drafting uses Google Gemini (or OpenAI) to populate template schemas from instructions.
+> You can supply your personal key per-request via the `X-LLM-ApiKey` header or the `api_key` JSON parameter in the draft payload.
+
 ## 2. The workflow
 
 Document generation is a five-step pipeline. A template defines the document's shape (sections,
@@ -166,9 +170,10 @@ and flags anything it couldn't determine.
 | `instructions`        | Yes      | Natural-language brief, e.g. `"NDA between Acme Inc and Beta LLC, effective today, standard mutual confidentiality obligations"` |
 | `output_format`       | No       | Hint only (`"docx"` default) — actual formats are chosen later in Step 4     |
 | `provider`            | No       | `"Gemini"` or `"OpenAI"` — defaults to server configuration                  |
-| `api_key`             | No       | Bring-your-own LLM key                                                       |
+| `api_key`             | No       | Bring-your-own LLM key (Google Gemini or OpenAI)                              |
 | `model`               | No       | Specific model name                                                          |
 
+#### Mode A: Default Implementation (Server Key)
 ```bash
 curl -X POST https://your-server/api/documents/draft \
   -H "X-Document-Api-Key: pixous_your_key_here" \
@@ -176,6 +181,21 @@ curl -X POST https://your-server/api/documents/draft \
   -d '{
     "template_id": "nda",
     "instructions": "Mutual NDA between Acme Inc (123 Market St, SF) and Beta LLC (55 Harbor Rd, NY), effective today, 2-year term."
+  }'
+```
+
+#### Mode B: Own Key Implementation (BYOK Gemini)
+```bash
+curl -X POST https://your-server/api/documents/draft \
+  -H "X-Document-Api-Key: pixous_your_key_here" \
+  -H "X-LLM-ApiKey: AIzaSyYourPersonalGeminiKeyHere" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "template_id": "nda",
+    "instructions": "Mutual NDA between Acme Inc (123 Market St, SF) and Beta LLC (55 Harbor Rd, NY), effective today, 2-year term.",
+    "api_key": "AIzaSyYourPersonalGeminiKeyHere",
+    "provider": "Gemini",
+    "model": "gemini-flash-lite-latest"
   }'
 ```
 
