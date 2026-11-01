@@ -7,3 +7,7 @@ frontend/dist/
 .git/
 .vs/
 *.user
+appsettings.Development.json
+appsettings.Local.json
+*.env
+.env

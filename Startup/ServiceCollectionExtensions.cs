@@ -37,16 +37,46 @@ public static class ServiceCollectionExtensions
 
     private static void ApplyApiKeyEnvironmentOverrides(ProcessingOptions opts)
     {
+        string? defaultProvider = Environment.GetEnvironmentVariable("DEFAULT_PROVIDER");
+        if (!string.IsNullOrWhiteSpace(defaultProvider))
+        {
+            opts.DefaultProvider = defaultProvider;
+        }
+
         string? geminiEnvKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         if (!string.IsNullOrWhiteSpace(geminiEnvKey))
         {
             opts.Gemini.ApiKey = geminiEnvKey;
         }
 
+        string? geminiModel = Environment.GetEnvironmentVariable("GEMINI_MODEL");
+        if (!string.IsNullOrWhiteSpace(geminiModel))
+        {
+            opts.Gemini.Model = geminiModel;
+        }
+
         string? openAiEnvKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         if (!string.IsNullOrWhiteSpace(openAiEnvKey))
         {
             opts.OpenAi.ApiKey = openAiEnvKey;
+        }
+
+        string? openAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL");
+        if (!string.IsNullOrWhiteSpace(openAiModel))
+        {
+            opts.OpenAi.Model = openAiModel;
+        }
+
+        string? storageProvider = Environment.GetEnvironmentVariable("STORAGE_PROVIDER");
+        if (!string.IsNullOrWhiteSpace(storageProvider))
+        {
+            opts.Storage.Provider = storageProvider;
+        }
+
+        string? storageOutputDir = Environment.GetEnvironmentVariable("STORAGE_OUTPUT_BASE_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(storageOutputDir))
+        {
+            opts.Storage.OutputBaseDirectory = storageOutputDir;
         }
     }
 
@@ -59,17 +89,59 @@ public static class ServiceCollectionExtensions
         var portalAuthOptions = new PortalAuthOptions();
         builder.Configuration.GetSection("PortalAuth").Bind(portalAuthOptions);
 
-        string? googleClientIdEnv = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID");
+        string? googleClientIdEnv = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID")
+            ?? Environment.GetEnvironmentVariable("PORTAL_AUTH_GOOGLE_CLIENT_ID");
         if (!string.IsNullOrWhiteSpace(googleClientIdEnv)) portalAuthOptions.GoogleClientId = googleClientIdEnv;
 
-        string? jwtSigningKeyEnv = Environment.GetEnvironmentVariable("JWT_SIGNING_KEY");
+        string? jwtSigningKeyEnv = Environment.GetEnvironmentVariable("JWT_SIGNING_KEY")
+            ?? Environment.GetEnvironmentVariable("PORTAL_AUTH_JWT_SIGNING_KEY");
         if (!string.IsNullOrWhiteSpace(jwtSigningKeyEnv)) portalAuthOptions.JwtSigningKey = jwtSigningKeyEnv;
+
+        string? jwtIssuerEnv = Environment.GetEnvironmentVariable("JWT_ISSUER");
+        if (!string.IsNullOrWhiteSpace(jwtIssuerEnv)) portalAuthOptions.JwtIssuer = jwtIssuerEnv;
+
+        string? jwtAudienceEnv = Environment.GetEnvironmentVariable("JWT_AUDIENCE");
+        if (!string.IsNullOrWhiteSpace(jwtAudienceEnv)) portalAuthOptions.JwtAudience = jwtAudienceEnv;
+
+        string? adminEmailsEnv = Environment.GetEnvironmentVariable("ADMIN_EMAILS");
+        if (!string.IsNullOrWhiteSpace(adminEmailsEnv))
+        {
+            portalAuthOptions.AdminEmails = adminEmailsEnv
+                .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+        }
 
         builder.Services.AddSingleton(portalAuthOptions);
         builder.Services.AddSingleton<PixousDocIntelligence.Security.PortalJwtTokenService>();
         builder.Services.AddScoped<PixousDocIntelligence.Services.Accounts.CustomerAccountService>();
 
         return portalAuthOptions;
+    }
+
+    /// <summary>
+    /// Normalizes standard postgres:// or postgresql:// URIs into ADO.NET connection strings.
+    /// </summary>
+    public static string NormalizePostgresConnectionString(string connectionString)
+    {
+        if (connectionString.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) ||
+            connectionString.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var uri = new Uri(connectionString);
+                var userInfo = uri.UserInfo.Split(':');
+                var username = userInfo.Length > 0 ? Uri.UnescapeDataString(userInfo[0]) : "";
+                var password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "";
+                var port = uri.Port > 0 ? uri.Port : 5432;
+                var database = uri.AbsolutePath.TrimStart('/');
+                return $"Host={uri.Host};Port={port};Database={database};Username={username};Password={password};Pooling=true;";
+            }
+            catch
+            {
+                return connectionString;
+            }
+        }
+        return connectionString;
     }
 
     /// <summary>
@@ -94,8 +166,14 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ProcessingOptions>>(),
                 sp.GetService<IHttpClientFactory>()));
 
-        string? postgresConnection = configuration.GetConnectionString("DocumentIntelligence")
-            ?? Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING");
+        string? rawConnection = configuration.GetConnectionString("DocumentIntelligence")
+            ?? Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING")
+            ?? Environment.GetEnvironmentVariable("DATABASE_URL")
+            ?? Environment.GetEnvironmentVariable("CONNECTION_STRING");
+
+        string? postgresConnection = string.IsNullOrWhiteSpace(rawConnection)
+            ? null
+            : NormalizePostgresConnectionString(rawConnection);
 
         if (!string.IsNullOrWhiteSpace(postgresConnection))
         {
@@ -110,7 +188,9 @@ public static class ServiceCollectionExtensions
         }
 
         string storageProvider = processingOptions.Storage.Provider;
-        if (storageProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(postgresConnection))
+        bool isPostgres = storageProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase) ||
+                          storageProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase);
+        if (isPostgres && !string.IsNullOrWhiteSpace(postgresConnection))
         {
             services.AddSingleton<IDocumentProcessingRepository, PostgresDocumentProcessingRepository>();
         }

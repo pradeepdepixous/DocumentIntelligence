@@ -1,6 +1,7 @@
 # Build and execution artifacts
 bin/
 obj/
+wwwroot/
 *.user
 *.suo
 

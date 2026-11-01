@@ -8,7 +8,8 @@ public static class DatabaseInitializer
 {
     public static void EnsureSchema(WebApplication app, string storageProvider, PortalAuthOptions portalAuthOptions)
     {
-        if (!storageProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase))
+        if (!storageProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase) &&
+            !storageProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -66,7 +67,7 @@ public static class DatabaseInitializer
                     document_type TEXT NOT NULL,
                     version INT NOT NULL DEFAULT 1,
                     requirements_json JSONB NOT NULL DEFAULT '[]',
-                    decision_policy_json JSONB NOT NULL DEFAULT '{}',
+                    decision_policy_json JSONB NOT NULL DEFAULT '{{}}',
                     is_active BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

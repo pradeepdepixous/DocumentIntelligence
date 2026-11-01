@@ -1,20 +1,18 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
     container_name: pixous_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: pixous_doc_intelligence
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: ${POSTGRES_DB:-pixous_doc_intelligence}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,8 +27,15 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      ConnectionStrings__DocumentIntelligence: "Host=postgres;Port=5432;Database=pixous_doc_intelligence;Username=postgres;Password=postgrespassword"
-      Gemini__ApiKey: "${GEMINI_API_KEY:-}"
+      ASPNETCORE_ENVIRONMENT: Production
+      STORAGE_PROVIDER: "Postgres"
+      POSTGRES_CONNECTION_STRING: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-pixous_doc_intelligence};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgrespassword}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-flash-lite-latest}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:-replace_this_with_a_secure_random_key_of_at_least_32_chars}"
+      ADMIN_EMAILS: "${ADMIN_EMAILS:-}"
     ports:
       - "8080:8080"
     volumes:
@@ -41,6 +46,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
     container_name: pixous_frontend
     restart: unless-stopped
     depends_on:
