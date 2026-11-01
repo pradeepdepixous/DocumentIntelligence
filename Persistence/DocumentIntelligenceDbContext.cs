@@ -18,6 +18,8 @@ public class DocumentIntelligenceDbContext : DbContext
     public DbSet<ReconciliationLedgerEntity> ReconciliationLedgers => Set<ReconciliationLedgerEntity>();
     public DbSet<ReviewTaskEntity> ReviewTasks => Set<ReviewTaskEntity>();
     public DbSet<CustomerAccountEntity> CustomerAccounts => Set<CustomerAccountEntity>();
+    public DbSet<ValidationProfileEntity> ValidationProfiles => Set<ValidationProfileEntity>();
+    public DbSet<ValidationResultEntity> ValidationResults => Set<ValidationResultEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -92,6 +94,27 @@ public class DocumentIntelligenceDbContext : DbContext
             entity.HasKey(e => e.AccountId);
             entity.HasIndex(e => e.GoogleSubject).IsUnique();
             entity.HasIndex(e => e.Email).IsUnique();
+        });
+
+        // Validation Profiles
+        modelBuilder.Entity<ValidationProfileEntity>(entity =>
+        {
+            entity.ToTable("validation_profiles");
+            entity.HasKey(e => e.ProfileId);
+            entity.HasIndex(e => new { e.TenantId, e.ProfileId });
+            entity.HasIndex(e => e.DocumentType);
+            entity.Property(e => e.RequirementsJson).HasColumnType("jsonb");
+            entity.Property(e => e.DecisionPolicyJson).HasColumnType("jsonb");
+        });
+
+        // Validation Results
+        modelBuilder.Entity<ValidationResultEntity>(entity =>
+        {
+            entity.ToTable("validation_results");
+            entity.HasKey(e => e.ValidationId);
+            entity.HasIndex(e => new { e.TenantId, e.ValidationId });
+            entity.HasIndex(e => e.ProfileId);
+            entity.Property(e => e.ChecksJson).HasColumnType("jsonb");
         });
     }
 }

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { apiFetch, ApiError } from "../lib/apiClient";
-import type { AdminAccountSummary, AdminUsageResponse } from "../lib/types";
+import type { AdminAccountSummary, AdminUsageResponse, SetAccountCreditResponse } from "../lib/types";
 import StatCard from "../components/StatCard";
 
 export default function Admin() {
   const [accounts, setAccounts] = useState<AdminAccountSummary[] | null>(null);
   const [usage, setUsage] = useState<AdminUsageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingCreditFor, setEditingCreditFor] = useState<string | null>(null);
+  const [creditInput, setCreditInput] = useState("");
 
   async function load() {
     try {
@@ -24,6 +26,36 @@ export default function Admin() {
   useEffect(() => {
     load();
   }, []);
+
+  const accountById = new Map((accounts ?? []).map((a) => [a.account_id, a]));
+  function ownerLabel(ownerAccountId: string | null): string {
+    if (!ownerAccountId) return "(admin-provisioned)";
+    const owner = accountById.get(ownerAccountId);
+    return owner ? `${owner.name} (${owner.email})` : ownerAccountId;
+  }
+
+  function startEditCredit(a: AdminAccountSummary) {
+    setEditingCreditFor(a.account_id);
+    setCreditInput(String(a.credit_limit));
+  }
+
+  async function handleSaveCredit(accountId: string) {
+    const newLimit = Number(creditInput);
+    if (!Number.isFinite(newLimit) || newLimit < 0) {
+      setError("Enter a valid non-negative credit limit.");
+      return;
+    }
+    try {
+      await apiFetch<SetAccountCreditResponse>(`/admin/accounts/${accountId}/credit`, {
+        method: "POST",
+        body: JSON.stringify({ creditLimit: newLimit }),
+      });
+      setEditingCreditFor(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update credit limit");
+    }
+  }
 
   async function handleRevoke(clientId: string) {
     if (!confirm(`Revoke key ${clientId}? This cannot be undone.`)) return;
@@ -43,6 +75,7 @@ export default function Admin() {
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {!usage && !error && <p className="text-sm text-gray-400">Loading admin data...</p>}
 
       {usage && (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -61,7 +94,7 @@ export default function Admin() {
               <tr>
                 <th className="py-2 pr-4">Account</th>
                 <th className="py-2 pr-4">Keys</th>
-                <th className="py-2 pr-4">Pages Used</th>
+                <th className="py-2 pr-4">Credit</th>
                 <th className="py-2 pr-4">Requests</th>
                 <th className="py-2 pr-4">Last Login</th>
                 <th className="py-2 pr-4">Role</th>
@@ -82,7 +115,34 @@ export default function Admin() {
                   <td className="py-2 pr-4">
                     {a.active_keys} / {a.total_keys}
                   </td>
-                  <td className="py-2 pr-4">{a.total_pages_used_this_cycle}</td>
+                  <td className="py-2 pr-4">
+                    {editingCreditFor === a.account_id ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          value={creditInput}
+                          onChange={(e) => setCreditInput(e.target.value)}
+                          className="w-20 rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        />
+                        <button onClick={() => handleSaveCredit(a.account_id)} className="text-xs text-blue-600 hover:underline">
+                          Save
+                        </button>
+                        <button onClick={() => setEditingCreditFor(null)} className="text-xs text-gray-400 hover:underline">
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span>
+                          {a.credits_used} / {a.credit_limit}
+                        </span>
+                        <button onClick={() => startEditCredit(a)} className="text-xs text-blue-600 hover:underline">
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td className="py-2 pr-4">{a.total_requests}</td>
                   <td className="py-2 pr-4 text-xs text-gray-500">
                     {a.last_login_at ? new Date(a.last_login_at).toLocaleString() : "Never"}
@@ -94,6 +154,7 @@ export default function Admin() {
               ))}
             </tbody>
           </table>
+          {accounts === null && !error && <p className="py-4 text-sm text-gray-400">Loading accounts...</p>}
           {accounts?.length === 0 && <p className="py-4 text-sm text-gray-400">No accounts yet.</p>}
         </div>
       </div>
@@ -116,7 +177,7 @@ export default function Admin() {
               {usage?.keys.map((k) => (
                 <tr key={k.client_id} className="border-t border-gray-100">
                   <td className="py-2 pr-4">{k.name}</td>
-                  <td className="py-2 pr-4 text-xs text-gray-500">{k.owner_account_id ?? "(admin-provisioned)"}</td>
+                  <td className="py-2 pr-4 text-xs text-gray-500">{ownerLabel(k.owner_account_id)}</td>
                   <td className="py-2 pr-4 font-mono text-xs">{k.key_prefix}...</td>
                   <td className="py-2 pr-4">
                     {k.pages_used} / {k.monthly_quota}

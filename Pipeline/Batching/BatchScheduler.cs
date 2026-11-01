@@ -90,34 +90,50 @@ public class BatchScheduler : IBatchScheduler
         return manifest;
     }
 
-    public async Task<byte[]> ExtractBatchBytesAsync(
-        string originalPdfPath, 
-        BatchDescriptor batch, 
-        CancellationToken cancellationToken = default)
+    public IPdfBatchSource OpenBatchSource(string originalPdfPath)
     {
         if (!File.Exists(originalPdfPath))
         {
             throw new FileNotFoundException($"PDF file not found: {originalPdfPath}");
         }
 
-        // If the batch covers the entire document, return the original file directly
-        using (var probeDoc = PdfDocument.Open(originalPdfPath))
+        return new PdfBatchSource(originalPdfPath);
+    }
+
+    /// <summary>
+    /// Opens the source PDF once (via PdfPig) and reuses that parsed document to slice out
+    /// every batch's page range, instead of re-opening/re-parsing the whole file per batch.
+    /// </summary>
+    private sealed class PdfBatchSource : IPdfBatchSource
+    {
+        private readonly string _originalPdfPath;
+        private readonly PdfDocument _sourceDoc;
+
+        public PdfBatchSource(string originalPdfPath)
         {
-            if (batch.StartPage == 1 && batch.EndPage == probeDoc.NumberOfPages)
+            _originalPdfPath = originalPdfPath;
+            _sourceDoc = PdfDocument.Open(originalPdfPath);
+        }
+
+        public Task<byte[]> ExtractBatchBytesAsync(BatchDescriptor batch, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // If the batch covers the entire document, return the original file directly
+            if (batch.StartPage == 1 && batch.EndPage == _sourceDoc.NumberOfPages)
             {
-                return await File.ReadAllBytesAsync(originalPdfPath, cancellationToken);
+                return File.ReadAllBytesAsync(_originalPdfPath, cancellationToken);
             }
+
+            var builder = new PdfDocumentBuilder();
+            for (int pageNum = batch.StartPage; pageNum <= batch.EndPage; pageNum++)
+            {
+                builder.AddPage(_sourceDoc, pageNum);
+            }
+
+            return Task.FromResult(builder.Build());
         }
 
-        // Slice pages using PdfDocumentBuilder
-        var builder = new PdfDocumentBuilder();
-        using var sourceDoc = PdfDocument.Open(originalPdfPath);
-
-        for (int pageNum = batch.StartPage; pageNum <= batch.EndPage; pageNum++)
-        {
-            builder.AddPage(sourceDoc, pageNum);
-        }
-
-        return builder.Build();
+        public void Dispose() => _sourceDoc.Dispose();
     }
 }

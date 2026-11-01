@@ -7,16 +7,20 @@ using PixousDocIntelligence.Domain.Contracts;
 namespace PixousDocIntelligence.Pipeline.Verification;
 
 /// <summary>
-/// Phase 6 Implementation: Validates model-reported citations against PDF page text,
-/// intelligently detects scanned/photograph/raster pages without text layers,
-/// calibrates confidence scores, and routes anomalies to the human review queue.
+/// Phase 6 Implementation: Multi-layer quality assurance and deterministic evidence verification.
+/// Verifies that LLM-reported quotes actually exist verbatim on source PDF pages and calibrates
+/// confidence scores down if citations cannot be grounded.
 /// </summary>
 public class EvidenceVerifier : IEvidenceVerifier
 {
+    private static readonly Regex DateCandidatePattern = new(
+        @"\b(?:[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
+        RegexOptions.Compiled);
+
     public Task<VerificationReport> VerifyEvidenceAndCalibrateAsync(
-        string pdfPath, 
-        DocumentEnvelope envelope, 
-        QualityPolicy? policy = null, 
+        string pdfPath,
+        DocumentEnvelope envelope,
+        QualityPolicy? policy = null,
         CancellationToken cancellationToken = default)
     {
         policy ??= new QualityPolicy();
@@ -56,231 +60,181 @@ public class EvidenceVerifier : IEvidenceVerifier
             }
         }
 
-        // Tracks how many items/tables cite each page, to detect coverage gaps independent of
-        // the raw item count (a document can have "enough" fields yet leave whole pages untouched).
+        report.TotalItemsChecked = envelope.Items.Count;
+
+        // Track per-page counts
         var pageItemCounts = new Dictionary<int, int>();
         var pageTableCounts = new Dictionary<int, int>();
 
-        report.TotalItemsChecked = envelope.Items.Count;
-
-        // 2. Deterministic verification of each item's evidence, source by source.
-        // A field whose value aggregates facts from several pages carries one SourceEvidence
-        // per contributing page, so each citation is checked and aligned independently instead
-        // of trusting only the first one.
-        foreach (var item in envelope.Items)
+        // 2. Perform Evidence Verification if structured items exist (Schema Mode)
+        if (envelope.Items.Count > 0)
         {
-            if (item.Sources.Count == 0)
+            foreach (var item in envelope.Items)
             {
-                item.Sources.Add(new SourceEvidence());
-            }
+                int primaryPage = item.PrimaryPageNumber;
+                pageItemCounts[primaryPage] = pageItemCounts.GetValueOrDefault(primaryPage) + 1;
 
-            int verifiedSourceCount = 0;
-            bool anySourceOnScannedPage = false;
-            bool anySourceFuzzyMatch = false;
-            var unverifiedSources = new List<SourceEvidence>();
-
-            foreach (var source in item.Sources)
-            {
-                string sourceQuote = CleanForMatching(source.SourceText);
-                bool isVerified = false;
-                bool isExactMatch = false;
-                bool targetPageIsScanned = pageIsScannedMap.TryGetValue(source.PageNumber, out bool scanned) && scanned;
-
-                // Check the reported page, and adjacent page if close to boundary
-                var candidatePages = new[] { source.PageNumber, source.PageNumber - 1, source.PageNumber + 1 }
-                    .Where(p => pageTextMap.ContainsKey(p));
-
-                foreach (var p in candidatePages)
+                if (item.ValueType == "conflict")
                 {
-                    string pageContent = pageTextMap[p];
-                    if (string.IsNullOrWhiteSpace(sourceQuote)) continue;
-
-                    if (pageContent.Contains(sourceQuote, StringComparison.OrdinalIgnoreCase))
-                    {
-                        isVerified = true;
-                        isExactMatch = true;
-                        source.PageNumber = p; // Align to verified page
-                        break;
-                    }
-
-                    // Check keyword token overlap
-                    var tokens = sourceQuote.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                        .Where(t => t.Length >= 3).ToList();
-
-                    if (tokens.Count > 0)
-                    {
-                        int matches = tokens.Count(t => pageContent.Contains(t, StringComparison.OrdinalIgnoreCase));
-                        if (((double)matches / tokens.Count) >= 0.60)
-                        {
-                            isVerified = true;
-                            source.PageNumber = p;
-                            break;
-                        }
-                    }
+                    continue; // Conflicts are handled via the conflict records loop below
                 }
 
-                if (isVerified)
+                bool anySourceOnScannedPage = false;
+                int verifiedSourceCount = 0;
+                var unverifiedSources = new List<SourceEvidence>();
+
+                foreach (var source in item.Sources)
                 {
-                    verifiedSourceCount++;
-                    if (!isExactMatch)
+                    if (source.PageNumber < 1 || source.PageNumber > report.TotalPages)
                     {
-                        anySourceFuzzyMatch = true;
+                        unverifiedSources.Add(source);
+                        continue;
                     }
-                }
-                else
-                {
-                    unverifiedSources.Add(source);
-                    if (targetPageIsScanned)
+
+                    if (pageIsScannedMap.GetValueOrDefault(source.PageNumber))
                     {
                         anySourceOnScannedPage = true;
                     }
-                }
-            }
 
-            bool allVerified = unverifiedSources.Count == 0;
-
-            foreach (var source in item.Sources)
-            {
-                pageItemCounts[source.PageNumber] = pageItemCounts.GetValueOrDefault(source.PageNumber) + 1;
-            }
-
-            // A cited quote existing on the claimed page only proves the CITATION is real; it says
-            // nothing about whether the asserted VALUE is actually what that citation supports (a
-            // hallucinated or mis-parsed value can sit right next to a perfectly real quote). Check
-            // each individual value entry against the combined evidence text for this item.
-            string rawCombinedEvidence = string.Join(" ", item.Sources.Select(s => s.SourceText));
-            string combinedEvidence = CleanForMatching(rawCombinedEvidence);
-            var unsupportedValues = new List<string>();
-            bool anyValueFuzzyMatch = false;
-            foreach (var valueText in GetValueEntriesForVerification(item))
-            {
-                string cleanedValue = CleanForMatching(valueText);
-                if (string.IsNullOrWhiteSpace(cleanedValue)) continue;
-                if (combinedEvidence.Contains(cleanedValue, StringComparison.OrdinalIgnoreCase)) continue;
-
-                var valueTokens = cleanedValue.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .Where(t => t.Length >= 3).ToList();
-                bool tokenSupported = valueTokens.Count > 0 &&
-                    ((double)valueTokens.Count(t => combinedEvidence.Contains(t, StringComparison.OrdinalIgnoreCase)) / valueTokens.Count) >= 0.60;
-
-                if (tokenSupported)
-                {
-                    anyValueFuzzyMatch = true;
-                    continue;
+                    string pageContent = pageTextMap.GetValueOrDefault(source.PageNumber, string.Empty);
+                    if (IsQuotePresentOnPage(source.SourceText, pageContent))
+                    {
+                        verifiedSourceCount++;
+                    }
+                    else
+                    {
+                        unverifiedSources.Add(source);
+                    }
                 }
 
-                // Literal matching fails for a value the model already reformatted (e.g. a
-                // normalized "2026-05-15" sitting next to its human-readable quote "May 15, 2026").
-                // Fall back to date-aware comparison before declaring it unsupported.
-                if (IsDateSupportedByEvidence(valueText, rawCombinedEvidence))
+                bool allVerified = item.Sources.Count > 0 && verifiedSourceCount == item.Sources.Count;
+
+                // Check whether the extracted value is supported by the cited evidence quote
+                var valueEntries = GetValueEntriesForVerification(item);
+                string rawEvidence = string.Join(" ", item.Sources.Select(s => s.SourceText));
+                string cleanedEvidence = CleanForMatching(rawEvidence);
+
+                var unsupportedValues = new List<string>();
+                foreach (var entry in valueEntries)
                 {
-                    anyValueFuzzyMatch = true;
-                    continue;
+                    if (string.IsNullOrWhiteSpace(entry)) continue;
+
+                    bool supported = IsValueSupported(entry, rawEvidence, cleanedEvidence);
+                    if (!supported)
+                    {
+                        unsupportedValues.Add(entry);
+                    }
                 }
 
-                unsupportedValues.Add(valueText);
-            }
-            bool allValuesSupported = unsupportedValues.Count == 0;
+                bool allValuesSupported = unsupportedValues.Count == 0;
 
-            if (allVerified && allValuesSupported)
-            {
-                report.VerifiedCount++;
-                item.ValidationStatus = "evidence_confirmed";
-
-                // A model-reported confidence of 1.0 is never proof of correctness — it's just an
-                // unverified self-assessment. "Evidence confirmed" only means the citation is real
-                // and the value appears in it, so cap the score according to match quality instead
-                // of trusting whatever the model claimed; an exact match earns a higher ceiling than
-                // a fuzzy token-overlap match.
-                double ceiling = (anySourceFuzzyMatch || anyValueFuzzyMatch) ? 0.85 : 0.97;
-                double modelReported = item.Confidence.Value;
-                item.Confidence.Value = Math.Min(modelReported, ceiling);
-                if (item.Confidence.Value < modelReported)
+                if (allVerified && allValuesSupported)
                 {
-                    item.Confidence.CalibrationAdjustment = item.Confidence.Value - modelReported;
+                    report.VerifiedCount++;
+                    item.ValidationStatus = "verified";
+                    item.Confidence.Source = "evidence_grounded";
                 }
-                item.Confidence.Source = "rule_verified";
-            }
-            else if (allVerified && !allValuesSupported)
-            {
-                // Citations are real and on the claimed page(s), but at least one asserted value
-                // cannot be found within the cited evidence text itself — do not call this confirmed.
-                report.UnverifiedEvidenceCount++;
-                item.ValidationStatus = "value_unsupported";
-                double penalty = policy.UnverifiedPenalty;
-                item.Confidence.CalibrationAdjustment = -penalty;
-                item.Confidence.Value = Math.Max(0.10, item.Confidence.Value - penalty);
-                item.Confidence.Source = "rule_verified";
-
-                report.ReviewTasks.Add(new ReviewTask
+                else if (allVerified && !allValuesSupported)
                 {
-                    JobId = envelope.JobId,
-                    FieldKey = item.FieldKey,
-                    PageNumber = item.PrimaryPageNumber,
-                    Reason = "value_unsupported",
-                    ReportedValue = item.Value,
-                    ReportedConfidence = item.Confidence.Value,
-                    SourceQuote = item.PrimarySourceText,
-                    ReviewerNotes = $"Value(s) not found within the cited evidence text: {string.Join("; ", unsupportedValues)}. The citation is real but may not actually support this value."
-                });
-            }
-            else if (anySourceOnScannedPage && verifiedSourceCount == 0)
-            {
-                // Scanned or image-only pages: Gemini extracted this using its multimodal vision encoder.
-                // Do not penalize confidence as an unverified hallucination.
-                report.VisionVerifiedCount++;
-                item.ValidationStatus = "vision_verified_scanned_page";
-                item.Confidence.Source = "vlm_vision_ocr";
-            }
-            else
-            {
-                report.UnverifiedEvidenceCount++;
-                item.ValidationStatus = verifiedSourceCount > 0 ? "partially_verified" : "unverified_evidence";
-                // Calibrate confidence downward when evidence cannot be verified on a digital text page
-                double penalty = policy.UnverifiedPenalty;
-                item.Confidence.CalibrationAdjustment = -penalty;
-                item.Confidence.Value = Math.Max(0.10, item.Confidence.Value - penalty);
+                    report.UnverifiedEvidenceCount++;
+                    item.ValidationStatus = "value_unsupported";
+                    double penalty = policy.UnverifiedPenalty;
+                    item.Confidence.CalibrationAdjustment = -penalty;
+                    item.Confidence.Value = Math.Max(0.10, item.Confidence.Value - penalty);
+                    item.Confidence.Source = "rule_verified";
 
-                foreach (var source in unverifiedSources)
-                {
                     report.ReviewTasks.Add(new ReviewTask
                     {
                         JobId = envelope.JobId,
                         FieldKey = item.FieldKey,
-                        PageNumber = source.PageNumber,
-                        Reason = "unverified_evidence",
+                        PageNumber = item.PrimaryPageNumber,
+                        Reason = "value_unsupported",
                         ReportedValue = item.Value,
                         ReportedConfidence = item.Confidence.Value,
-                        SourceQuote = source.SourceText,
-                        ReviewerNotes = $"Source quote was not found on digital text Page {source.PageNumber}. Potential hallucination or wrong page attribution."
+                        SourceQuote = item.PrimarySourceText,
+                        ReviewerNotes = $"Value(s) not found within the cited evidence text: {string.Join("; ", unsupportedValues)}. The citation is real but may not fully support this value."
+                    });
+                }
+                else if (anySourceOnScannedPage && verifiedSourceCount == 0)
+                {
+                    report.VisionVerifiedCount++;
+                    item.ValidationStatus = "vision_verified_scanned_page";
+                    item.Confidence.Source = "vlm_vision_ocr";
+                }
+                else
+                {
+                    report.UnverifiedEvidenceCount++;
+                    item.ValidationStatus = verifiedSourceCount > 0 ? "partially_verified" : "unverified_evidence";
+                    double penalty = policy.UnverifiedPenalty;
+                    item.Confidence.CalibrationAdjustment = -penalty;
+                    item.Confidence.Value = Math.Max(0.10, item.Confidence.Value - penalty);
+
+                    foreach (var source in unverifiedSources)
+                    {
+                        report.ReviewTasks.Add(new ReviewTask
+                        {
+                            JobId = envelope.JobId,
+                            FieldKey = item.FieldKey,
+                            PageNumber = source.PageNumber,
+                            Reason = "unverified_evidence",
+                            ReportedValue = item.Value,
+                            ReportedConfidence = item.Confidence.Value,
+                            SourceQuote = source.SourceText,
+                            ReviewerNotes = $"Source quote was not found on digital text Page {source.PageNumber}. Potential hallucination or wrong page attribution."
+                        });
+                    }
+                }
+
+                // Check if calibrated confidence falls below review threshold
+                if (item.Confidence.Value < policy.ReviewThreshold && (allVerified || anySourceOnScannedPage) && allValuesSupported)
+                {
+                    report.LowConfidenceCount++;
+                    item.ValidationStatus = "flagged_low_confidence";
+
+                    report.ReviewTasks.Add(new ReviewTask
+                    {
+                        JobId = envelope.JobId,
+                        FieldKey = item.FieldKey,
+                        PageNumber = item.PrimaryPageNumber,
+                        Reason = "low_confidence",
+                        ReportedValue = item.Value,
+                        ReportedConfidence = item.Confidence.Value,
+                        SourceQuote = item.PrimarySourceText,
+                        ReviewerNotes = $"Reported confidence ({item.Confidence.Value:P0}) is below review threshold ({policy.ReviewThreshold:P0})."
                     });
                 }
             }
 
-            // Check if calibrated confidence falls below review threshold
-            if (item.Confidence.Value < policy.ReviewThreshold && (allVerified || anySourceOnScannedPage) && allValuesSupported)
+            foreach (var table in envelope.Tables)
             {
-                report.LowConfidenceCount++;
-                item.ValidationStatus = "flagged_low_confidence";
+                pageTableCounts[table.PageNumber] = pageTableCounts.GetValueOrDefault(table.PageNumber) + 1;
+            }
+
+            // 3. Automatically route any Unresolved Conflicts to the Review Queue
+            foreach (var conflict in envelope.UnresolvedConflicts)
+            {
+                var firstCandidate = conflict.Candidates.FirstOrDefault();
 
                 report.ReviewTasks.Add(new ReviewTask
                 {
                     JobId = envelope.JobId,
-                    FieldKey = item.FieldKey,
-                    PageNumber = item.PrimaryPageNumber,
-                    Reason = "low_confidence",
-                    ReportedValue = item.Value,
-                    ReportedConfidence = item.Confidence.Value,
-                    SourceQuote = item.PrimarySourceText,
-                    ReviewerNotes = $"Reported confidence ({item.Confidence.Value:P0}) is below review threshold ({policy.ReviewThreshold:P0})."
+                    FieldKey = conflict.FieldKey,
+                    PageNumber = firstCandidate?.PageNumber ?? 1,
+                    Reason = "unresolved_conflict",
+                    ReportedValue = conflict.Candidates.Select(c => c.Value).ToList(),
+                    ReportedConfidence = conflict.Candidates.Count > 0 ? conflict.Candidates.Average(c => c.Confidence) : 0.50,
+                    SourceQuote = string.Join(" | ", conflict.Candidates.Select(c => c.SourceText)),
+                    ReviewerNotes = conflict.ResolutionRationale ?? "Conflicting values extracted across overlapping batches."
                 });
             }
         }
 
-        foreach (var table in envelope.Tables)
-        {
-            pageTableCounts[table.PageNumber] = pageTableCounts.GetValueOrDefault(table.PageNumber) + 1;
-        }
+        // 4. Calculate page coverage for both modes
+        const int minMeaningfulMarkdownLength = 20;
+        var pagesWithMarkdown = envelope.Pages
+            .Where(p => !string.IsNullOrWhiteSpace(p.Markdown) && p.Markdown.Trim().Length >= minMeaningfulMarkdownLength)
+            .Select(p => p.PageNumber)
+            .ToHashSet();
 
         report.PageCoverage = pageTextMap.Keys
             .OrderBy(p => p)
@@ -289,40 +243,19 @@ public class EvidenceVerifier : IEvidenceVerifier
                 PageNumber = p,
                 IsScanned = pageIsScannedMap.GetValueOrDefault(p),
                 ExtractedItemCount = pageItemCounts.GetValueOrDefault(p),
-                TableCount = pageTableCounts.GetValueOrDefault(p)
+                TableCount = pageTableCounts.GetValueOrDefault(p),
+                HasMarkdownContent = pagesWithMarkdown.Contains(p)
             })
             .ToList();
 
         report.PagesWithNoExtractedContent = report.PageCoverage
-            .Where(pc => pc.ExtractedItemCount == 0 && pc.TableCount == 0)
+            .Where(pc => pc.ExtractedItemCount == 0 && pc.TableCount == 0 && !pc.HasMarkdownContent)
             .Select(pc => pc.PageNumber)
             .ToList();
-
-        // 3. Automatically route any Unresolved Conflicts to the Review Queue
-        foreach (var conflict in envelope.UnresolvedConflicts)
-        {
-            var firstCandidate = conflict.Candidates.FirstOrDefault();
-
-            report.ReviewTasks.Add(new ReviewTask
-            {
-                JobId = envelope.JobId,
-                FieldKey = conflict.FieldKey,
-                PageNumber = firstCandidate?.PageNumber ?? 1,
-                Reason = "unresolved_conflict",
-                ReportedValue = conflict.Candidates.Select(c => c.Value).ToList(),
-                ReportedConfidence = conflict.Candidates.Count > 0 ? conflict.Candidates.Average(c => c.Confidence) : 0.50,
-                SourceQuote = string.Join(" | ", conflict.Candidates.Select(c => c.SourceText)),
-                ReviewerNotes = conflict.ResolutionRationale ?? "Conflicting values extracted across overlapping batches."
-            });
-        }
 
         return Task.FromResult(report);
     }
 
-    /// <summary>
-    /// Splits an item's value into the individual entries that should each be checkable against
-    /// the cited evidence text (one entry per array element, or a single entry for a scalar value).
-    /// </summary>
     private static List<string> GetValueEntriesForVerification(ExtractedItem item)
     {
         var entries = new List<string>();
@@ -356,15 +289,6 @@ public class EvidenceVerifier : IEvidenceVerifier
         return entries;
     }
 
-    private static readonly Regex DateCandidatePattern = new(
-        @"\b(?:[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
-        RegexOptions.Compiled);
-
-    /// <summary>
-    /// Recognizes a date value against its evidence even when the model already reformatted the
-    /// value (e.g. normalized "2026-05-15") while the citation still quotes the original
-    /// human-readable form (e.g. "May 15, 2026") — a literal substring/token match would miss this.
-    /// </summary>
     private static bool IsDateSupportedByEvidence(string valueText, string rawEvidence)
     {
         if (!DateTime.TryParse(valueText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var valueDate))
@@ -384,6 +308,90 @@ public class EvidenceVerifier : IEvidenceVerifier
         return false;
     }
 
+    private static bool IsQuotePresentOnPage(string? sourceText, string pageContent)
+    {
+        if (string.IsNullOrWhiteSpace(sourceText) || string.IsNullOrWhiteSpace(pageContent))
+            return false;
+
+        string cleanedQuote = CleanForMatching(sourceText);
+        if (string.IsNullOrEmpty(cleanedQuote)) return false;
+
+        if (pageContent.Contains(cleanedQuote))
+            return true;
+
+        // If not directly contained, handle quotes containing ellipsis (... or …), line breaks, or delimiters
+        var rawSegments = sourceText.Split(new[] { "...", "…", "\r\n", "\n", "\r", " | ", "---" }, StringSplitOptions.RemoveEmptyEntries);
+        var validSegments = rawSegments
+            .Select(CleanForMatching)
+            .Where(s => s.Length >= 6)
+            .ToList();
+
+        if (validSegments.Count > 0)
+        {
+            int matchedSegments = validSegments.Count(seg => pageContent.Contains(seg));
+            double matchRatio = (double)matchedSegments / validSegments.Count;
+            if (matchRatio >= 0.80 || matchedSegments == validSegments.Count)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsValueSupported(string entry, string rawEvidence, string cleanedEvidence)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return true;
+
+        string cleanedEntry = CleanForMatching(entry);
+        if (string.IsNullOrWhiteSpace(cleanedEntry)) return true;
+
+        // 1. Direct substring match
+        if (cleanedEvidence.Contains(cleanedEntry)) return true;
+
+        // 2. Date match
+        if (IsDateSupportedByEvidence(entry, rawEvidence)) return true;
+
+        // 3. Number and token overlap for long sentences/clauses
+        var entryWords = cleanedEntry.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 3)
+            .ToList();
+
+        if (entryWords.Count >= 4)
+        {
+            var entryNumbers = Regex.Matches(entry, @"\b\d+(?:[\.,]\d+)*%?\b")
+                .Select(m => m.Value.Replace(",", "").Replace(".", "").Trim())
+                .Where(n => n.Length > 0)
+                .ToList();
+
+            string rawEvidenceDigitsOnly = new string(rawEvidence.Where(char.IsDigit).ToArray());
+            bool numbersSupported = true;
+            if (entryNumbers.Count > 0)
+            {
+                int matchedNumbers = entryNumbers.Count(n => rawEvidenceDigitsOnly.Contains(n));
+                numbersSupported = ((double)matchedNumbers / entryNumbers.Count) >= 0.75;
+            }
+
+            int matchedWords = entryWords.Count(w => cleanedEvidence.Contains(w));
+            double wordRatio = (double)matchedWords / entryWords.Count;
+
+            if (wordRatio >= 0.70 && numbersSupported)
+            {
+                return true;
+            }
+        }
+        else if (entryWords.Count > 0)
+        {
+            // For short values (like organization names), check if all significant words appear in evidence
+            if (entryWords.All(w => cleanedEvidence.Contains(w)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static string CleanForMatching(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
@@ -391,3 +399,4 @@ public class EvidenceVerifier : IEvidenceVerifier
         return string.Join(" ", new string(chars).ToLowerInvariant().Split(new[] { ' ', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries));
     }
 }
+

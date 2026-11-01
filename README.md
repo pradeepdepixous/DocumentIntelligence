@@ -95,14 +95,14 @@ d:\pixous-doc_int\
 - A [Google AI Studio API Key](https://aistudio.google.com/app/apikey)
 
 ### 2. Configure API Key
-You can configure your API key in **one of two ways**:
+You can configure your API key in **three ways**:
 
-#### Option A: In `appsettings.json`
+#### Option A: In `appsettings.Development.json` (Local default)
 ```json
 {
   "Gemini": {
     "ApiKey": "YOUR_ACTUAL_GEMINI_API_KEY",
-    "Model": "gemini-2.5-flash"
+    "Model": "gemini-flash-lite-latest"
   }
 }
 ```
@@ -110,6 +110,14 @@ You can configure your API key in **one of two ways**:
 #### Option B: Environment Variable
 ```powershell
 $env:GEMINI_API_KEY="YOUR_ACTUAL_GEMINI_API_KEY"
+```
+
+#### Option C: Per-Request BYOK Header (HTTP API)
+Send your personal key directly in requests without changing server config:
+```http
+X-LLM-ApiKey: AIzaSyYourPersonalGeminiKeyHere
+X-LLM-Provider: Gemini
+X-LLM-Model: gemini-flash-lite-latest
 ```
 
 ### 3. Run the Application

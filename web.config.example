@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <location path="." inheritInChildApplications="false">
+    <system.webServer>
+      <handlers>
+        <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
+      </handlers>
+      <!-- hostingModel can be 'inprocess' (recommended) or 'outofprocess' -->
+      <aspNetCore processPath="dotnet" arguments=".\PixousDocIntelligence.dll" stdoutLogEnabled="true" stdoutLogFile=".\logs\stdout" hostingModel="inprocess">
+        <environmentVariables>
+          <!-- Set environment variables directly in IIS Application Pool / web.config -->
+          <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+          <environmentVariable name="STORAGE_PROVIDER" value="Postgres" />
+          <environmentVariable name="POSTGRES_CONNECTION_STRING" value="Host=localhost;Port=5432;Database=pixous_doc_intelligence;Username=postgres;Password=YOUR_PRODUCTION_PASSWORD" />
+          <environmentVariable name="GEMINI_API_KEY" value="YOUR_GEMINI_API_KEY" />
+          <environmentVariable name="JWT_SIGNING_KEY" value="YOUR_JWT_SIGNING_KEY_MINIMUM_32_CHARACTERS" />
+          <environmentVariable name="GOOGLE_CLIENT_ID" value="YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com" />
+          <environmentVariable name="ADMIN_EMAILS" value="admin@yourcompany.com" />
+        </environmentVariables>
+      </aspNetCore>
+      <security>
+        <requestFiltering>
+          <!-- Allow large multi-page PDF uploads (up to 100MB) in IIS -->
+          <requestLimits maxAllowedContentLength="104857600" />
+        </requestFiltering>
+      </security>
+    </system.webServer>
+  </location>
+</configuration>

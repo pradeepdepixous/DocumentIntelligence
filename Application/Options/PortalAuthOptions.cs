@@ -20,4 +20,11 @@ public class PortalAuthOptions
 
     /// <summary>Email addresses that receive the "admin" role in their portal session on sign-in.</summary>
     public List<string> AdminEmails { get; set; } = new();
+
+    /// <summary>
+    /// Page-processing credit granted to every new account on signup. Shared across the account's
+    /// own self-serve API keys AND Playground testing via the portal session — one pool, spent
+    /// either way, resetting monthly like the legacy per-key quota it replaces for self-serve keys.
+    /// </summary>
+    public int DefaultAccountCreditLimit { get; set; } = 1000;
 }

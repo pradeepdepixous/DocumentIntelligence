@@ -56,27 +56,7 @@ CREATE TABLE IF NOT EXISTS extraction_batches (
 
 CREATE INDEX IF NOT EXISTS idx_extraction_batches_job ON extraction_batches (job_id);
 
--- 4. EXTRACTION CANDIDATES TABLE
-CREATE TABLE IF NOT EXISTS extraction_candidates (
-    candidate_id VARCHAR(64) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
-    job_id VARCHAR(64) NOT NULL REFERENCES extraction_jobs(job_id) ON DELETE CASCADE,
-    batch_id VARCHAR(64) NOT NULL,
-    field_key VARCHAR(128) NOT NULL,
-    field_label VARCHAR(255),
-    value JSONB NOT NULL,
-    value_type VARCHAR(32) NOT NULL DEFAULT 'string',
-    page_number INT NOT NULL,
-    source_text TEXT,
-    confidence_value NUMERIC(4, 3) NOT NULL,
-    confidence_source VARCHAR(64) NOT NULL DEFAULT 'model_reported',
-    validation_status VARCHAR(64) NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_candidates_job_field ON extraction_candidates (job_id, field_key, page_number);
-CREATE INDEX IF NOT EXISTS idx_candidates_val_gin ON extraction_candidates USING GIN (value);
-
--- 5. STITCHED RECORDS TABLE
+-- 4. STITCHED RECORDS TABLE
 CREATE TABLE IF NOT EXISTS stitched_records (
     record_id VARCHAR(64) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
     job_id VARCHAR(64) NOT NULL UNIQUE REFERENCES extraction_jobs(job_id) ON DELETE CASCADE,
@@ -88,21 +68,7 @@ CREATE TABLE IF NOT EXISTS stitched_records (
 
 CREATE INDEX IF NOT EXISTS idx_stitched_records_gin ON stitched_records USING GIN (consolidated_payload);
 
--- 6. STITCHING DECISIONS TABLE
-CREATE TABLE IF NOT EXISTS stitching_decisions (
-    decision_id VARCHAR(64) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
-    job_id VARCHAR(64) NOT NULL REFERENCES extraction_jobs(job_id) ON DELETE CASCADE,
-    field_key VARCHAR(128) NOT NULL,
-    page_number INT NOT NULL,
-    decision_type VARCHAR(64) NOT NULL, -- 'merged_consistent', 'retained_provenance', 'flagged_conflict'
-    selected_value JSONB,
-    rationale TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_stitching_decisions_job ON stitching_decisions (job_id, field_key);
-
--- 7. REVIEW TASKS TABLE (HUMAN-IN-THE-LOOP AUDIT)
+-- 5. REVIEW TASKS TABLE (HUMAN-IN-THE-LOOP AUDIT)
 CREATE TABLE IF NOT EXISTS review_tasks (
     task_id VARCHAR(64) PRIMARY KEY,
     job_id VARCHAR(64) NOT NULL REFERENCES extraction_jobs(job_id) ON DELETE CASCADE,

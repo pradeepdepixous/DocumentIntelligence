@@ -10,7 +10,6 @@ using PixousDocIntelligence.Persistence.Repositories;
 using PixousDocIntelligence.Pipeline.Batching;
 using PixousDocIntelligence.Pipeline.Extraction;
 using PixousDocIntelligence.Pipeline.Ingestion;
-using PixousDocIntelligence.Pipeline.Normalization;
 using PixousDocIntelligence.Pipeline.Stitching;
 using PixousDocIntelligence.Pipeline.Verification;
 
@@ -64,6 +63,15 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
         var ingestionService = new DocumentIngestionService();
         var job = await ingestionService.IngestDocumentAsync(request.DocumentPath, request.TenantId, cancellationToken);
 
+        if (!string.IsNullOrWhiteSpace(request.JobId))
+        {
+            job.JobId = request.JobId;
+        }
+        if (!string.IsNullOrWhiteSpace(request.DocumentId))
+        {
+            job.DocumentId = request.DocumentId;
+        }
+
         var docEntity = new DocumentEntity
         {
             DocumentId = job.DocumentId,
@@ -98,11 +106,40 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             var llmClient = _llmClientFactory.GetClient(request.Provider, request.ApiKey, request.Model, request.Tier);
 
             // --- PHASE 2: INSTRUCTION PLANNER & DYNAMIC SCHEMA ---
-            progress?.Report($"[PHASE 2] Synthesizing extraction plan and dynamic schema with {llmClient.ProviderName} ({llmClient.ModelName})...");
-            var planner = new InstructionPlanner(llmClient);
-            string instructions = request.UserInstructions 
-                ?? "Extract all critical business entities, dates, parties, contact details, services, and tables.";
-            var plan = await planner.GeneratePlanAsync(instructions, documentTypeHint: null, cancellationToken: cancellationToken);
+            ExtractionPlan plan;
+            bool isMarkdownMode = string.Equals(request.Mode, "markdown", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(request.Mode, "full_content", StringComparison.OrdinalIgnoreCase);
+
+            if (isMarkdownMode)
+            {
+                progress?.Report("[PHASE 2] Markdown extraction requested: bypassing LLM schema planner for high-throughput transcription...");
+                plan = new ExtractionPlan
+                {
+                    TargetDocumentType = "Document",
+                    ExtractionMode = "markdown",
+                    UserInstruction = request.UserInstructions ?? "Transcribe all pages into structured markdown, preserving tables.",
+                    PreserveTables = true,
+                    SchemaVersion = 2
+                };
+            }
+            else if (!string.IsNullOrWhiteSpace(request.Schema))
+            {
+                progress?.Report("[PHASE 2] Loading manual JSON schema and bypassing LLM planner...");
+                plan = SchemaParser.Parse(request.Schema, request.UserInstructions);
+            }
+            else
+            {
+                progress?.Report($"[PHASE 2] Synthesizing extraction plan and dynamic schema with {llmClient.ProviderName} ({llmClient.ModelName})...");
+                var planner = new InstructionPlanner(llmClient);
+                string instructions = request.UserInstructions 
+                    ?? "Extract all critical business entities, dates, parties, contact details, services, and tables.";
+                plan = await planner.GeneratePlanAsync(instructions, documentTypeHint: null, cancellationToken: cancellationToken);
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Mode))
+            {
+                plan.ExtractionMode = request.Mode;
+            }
 
             jobEntity.ExtractionPlanJson = JsonSerializer.Serialize(plan);
             jobEntity.SchemaVersion = plan.SchemaVersion;
@@ -126,13 +163,17 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 job.Sha256Checksum);
             await _repository.SaveBatchManifestAsync(manifest, cancellationToken);
 
-            // --- PHASE 4: BATCH EXTRACTION (GEMINI OR OPENAI) ---
-            progress?.Report($"[PHASE 4] Extracting {manifest.Batches.Count} batches via {llmClient.ProviderName} ({llmClient.ModelName})...");
+            // --- PHASE 4: BATCH EXTRACTION (GEMINI OR OPENAI VIA STRATEGY) ---
+            var strategy = Pipeline.Extraction.ExtractionStrategyResolver.Resolve(plan, request.Mode);
+            progress?.Report($"[PHASE 4] Extracting {manifest.Batches.Count} batches via {llmClient.ProviderName} ({llmClient.ModelName}) using [{strategy.ModeName}] strategy...");
             Pipeline.Extraction.IBatchExtractor batchExtractor = llmClient.ProviderName.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-                ? new Pipeline.Extraction.OpenAiBatchExtractor(llmClient)
-                : new Pipeline.Extraction.GeminiBatchExtractor(request.ApiKey ?? _options.Gemini.ApiKey, llmClient.ModelName);
+                ? new Pipeline.Extraction.OpenAiBatchExtractor(llmClient, strategy)
+                : new Pipeline.Extraction.GeminiBatchExtractor(request.ApiKey ?? _options.Gemini.ApiKey, llmClient.ModelName, strategy: strategy);
 
             var batchEnvelopes = new List<DocumentEnvelope>();
+            var recoveryBudget = new RecoveryBudget { RemainingCalls = _options.Batching.MaxRecoveryCallsPerDocument };
+
+            using var batchSource = _batchScheduler.OpenBatchSource(request.DocumentPath);
 
             foreach (var batch in manifest.Batches)
             {
@@ -141,8 +182,8 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
 
                 try
                 {
-                    byte[] batchBytes = await _batchScheduler.ExtractBatchBytesAsync(request.DocumentPath, batch, cancellationToken);
-                    var envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+                    var envelope = await ExtractBatchWithRecoveryAsync(
+                        batchSource, batch, batchExtractor, plan, isMarkdownMode, recoveryBudget, progress, cancellationToken);
                     batchEnvelopes.Add(envelope);
                     batchWatch.Stop();
 
@@ -189,10 +230,6 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             var stitchedEnvelope = stitchingResult.Envelope;
             var reconciliationLedger = stitchingResult.Ledger;
 
-            // Normalize values (e.g. dates -> plan.NormalizationRules.DateFormat) while preserving
-            // the original verbatim text and its evidence.
-            ValueNormalizer.NormalizeEnvelope(stitchedEnvelope, plan);
-
             // --- PHASE 6: EVIDENCE VERIFICATION & QUALITY CONTROL ---
             progress?.Report("[PHASE 6] Running deterministic evidence verification & quality calibration...");
             var qualityPolicy = new QualityPolicy
@@ -205,6 +242,72 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 stitchedEnvelope, 
                 qualityPolicy, 
                 cancellationToken);
+
+            // In markdown mode without structured items, verify transcript completeness
+            if (stitchedEnvelope.Items.Count == 0)
+            {
+                if (stitchedEnvelope.Pages.Count == 0)
+                {
+                    verificationReport.ReviewTasks.Add(new ReviewTask
+                    {
+                        JobId = job.JobId,
+                        FieldKey = "(none)",
+                        PageNumber = 1,
+                        Reason = "incomplete_transcription",
+                        ReportedConfidence = 0,
+                        SourceQuote = string.Empty,
+                        ReviewerNotes = "No transcript pages were returned for this document at all. " +
+                                         "This usually means the extraction model's response for this run was malformed or empty — " +
+                                         "retrying the same document is the first thing to try."
+                    });
+                }
+                else
+                {
+                    var transcribedPages = stitchedEnvelope.Pages.Select(p => p.PageNumber).ToHashSet();
+                    var missingPages = Enumerable.Range(1, manifest.TotalPages).Where(p => !transcribedPages.Contains(p)).ToList();
+
+                    if (missingPages.Count > 0)
+                    {
+                        verificationReport.ReviewTasks.Add(new ReviewTask
+                        {
+                            JobId = job.JobId,
+                            FieldKey = "(none)",
+                            PageNumber = missingPages[0],
+                            Reason = "incomplete_transcription",
+                            ReportedConfidence = 0,
+                            SourceQuote = string.Empty,
+                            ReviewerNotes = $"No markdown transcript was returned for page(s) {string.Join(", ", missingPages)} of {manifest.TotalPages}. " +
+                                             "This usually means the extraction model's response for this run was malformed or incomplete — " +
+                                             "retrying the same document is the first thing to try."
+                        });
+                    }
+                }
+            }
+
+            // Flag any page where the model marked its own transcription as uncertain, so a human
+            // can check the source image for that region instead of trusting the text silently.
+            if (isMarkdownMode)
+            {
+                var unclearPages = stitchedEnvelope.Pages
+                    .Where(p => p.Markdown.Contains("[unclear]", StringComparison.OrdinalIgnoreCase))
+                    .Select(p => p.PageNumber)
+                    .ToList();
+
+                if (unclearPages.Count > 0)
+                {
+                    verificationReport.ReviewTasks.Add(new ReviewTask
+                    {
+                        JobId = job.JobId,
+                        FieldKey = "(none)",
+                        PageNumber = unclearPages[0],
+                        Reason = "unclear_content",
+                        ReportedConfidence = 0,
+                        SourceQuote = string.Empty,
+                        ReviewerNotes = $"Page(s) {string.Join(", ", unclearPages)} contain one or more [unclear] markers where the model " +
+                                         "could not confidently read the source content. Review the original page image for these sections."
+                    });
+                }
+            }
 
             // Persist stitched records and review tasks to repository
             await _repository.SaveStitchedRecordAsync(job.JobId, job.DocumentId, stitchedEnvelope, reconciliationLedger, cancellationToken);
@@ -224,7 +327,7 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
             await _repository.UpdateJobStatusAsync(job.JobId, finalStatus, null, cancellationToken);
             totalStopwatch.Stop();
 
-            return new DocumentProcessingResult
+            var result = new DocumentProcessingResult
             {
                 JobId = job.JobId,
                 DocumentId = job.DocumentId,
@@ -241,11 +344,162 @@ public class DocumentProcessingOrchestrator : IDocumentProcessingOrchestrator
                 ReconciliationLedgerPath = "[in-memory]",
                 ExecutionDurationMs = totalStopwatch.ElapsedMilliseconds
             };
+
+            await _repository.SaveProcessingResultAsync(job.JobId, result, cancellationToken);
+            return result;
         }
         catch (Exception ex)
         {
             await _repository.UpdateJobStatusAsync(job.JobId, "Failed", ex.Message, cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Extracts a batch and, in markdown mode, recovers from an incomplete transcript (missing or
+    /// blank pages) by retrying the same page range, then by halving it into smaller sub-batches
+    /// (down to a single page) until each slice comes back complete or can no longer be split.
+    /// Non-markdown modes and transient transport failures are left to the caller/extractor as before.
+    /// </summary>
+    private async Task<DocumentEnvelope> ExtractBatchWithRecoveryAsync(
+        Pipeline.Batching.IPdfBatchSource batchSource,
+        BatchDescriptor batch,
+        Pipeline.Extraction.IBatchExtractor batchExtractor,
+        ExtractionPlan plan,
+        bool isMarkdownMode,
+        RecoveryBudget budget,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        const int maxSameSizeRetries = 1;
+
+        byte[] batchBytes = await batchSource.ExtractBatchBytesAsync(batch, cancellationToken);
+        var envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+
+        if (!isMarkdownMode || IsTranscriptionComplete(envelope, batch))
+        {
+            return envelope;
+        }
+
+        for (int attempt = 1; attempt <= maxSameSizeRetries; attempt++)
+        {
+            if (budget.RemainingCalls <= 0)
+            {
+                progress?.Report($"  ↳ {batch.BatchId} (Pages {batch.StartPage}..{batch.EndPage}) is incomplete, but the document-wide " +
+                                  "recovery budget is exhausted — accepting it as-is and flagging it for review.");
+                return envelope;
+            }
+
+            budget.RemainingCalls--;
+            progress?.Report($"  ↳ {batch.BatchId} (Pages {batch.StartPage}..{batch.EndPage}) came back incomplete — " +
+                              $"retrying (attempt {attempt}, {budget.RemainingCalls} recovery calls left)...");
+            batch.RetryCount++;
+            envelope = await batchExtractor.ExtractBatchAsync(batchBytes, batch, plan, cancellationToken);
+
+            if (IsTranscriptionComplete(envelope, batch))
+            {
+                return envelope;
+            }
+        }
+
+        if (batch.PageCount <= 1)
+        {
+            // Can't split a single page any further — hand back the best result we have;
+            // the caller's completeness checks will flag the remaining gaps for human review.
+            return envelope;
+        }
+
+        if (budget.RemainingCalls < 2)
+        {
+            // Splitting always costs two mandatory sub-batch extractions; don't start one we
+            // can't afford to finish.
+            progress?.Report($"  ↳ {batch.BatchId} still incomplete, but the document-wide recovery budget is exhausted — " +
+                              "accepting the best result instead of splitting further.");
+            return envelope;
+        }
+
+        progress?.Report($"  ↳ {batch.BatchId} still incomplete after retries — splitting Pages {batch.StartPage}..{batch.EndPage} " +
+                          $"into smaller slices ({budget.RemainingCalls} recovery calls left)...");
+
+        int midpoint = batch.StartPage + (batch.PageCount / 2) - 1;
+        var firstHalf = new BatchDescriptor
+        {
+            BatchId = $"{batch.BatchId}-A",
+            JobId = batch.JobId,
+            DocumentId = batch.DocumentId,
+            SourceDocumentChecksum = batch.SourceDocumentChecksum,
+            StartPage = batch.StartPage,
+            EndPage = midpoint,
+            Status = BatchStatus.Pending
+        };
+        var secondHalf = new BatchDescriptor
+        {
+            BatchId = $"{batch.BatchId}-B",
+            JobId = batch.JobId,
+            DocumentId = batch.DocumentId,
+            SourceDocumentChecksum = batch.SourceDocumentChecksum,
+            StartPage = midpoint + 1,
+            EndPage = batch.EndPage,
+            Status = BatchStatus.Pending
+        };
+
+        // Charge the two mandatory first-attempt extractions the split is about to make; any
+        // further retries/splits within each half are charged separately as they happen.
+        budget.RemainingCalls -= 2;
+
+        var firstEnvelope = await ExtractBatchWithRecoveryAsync(batchSource, firstHalf, batchExtractor, plan, isMarkdownMode, budget, progress, cancellationToken);
+        var secondEnvelope = await ExtractBatchWithRecoveryAsync(batchSource, secondHalf, batchExtractor, plan, isMarkdownMode, budget, progress, cancellationToken);
+
+        batch.RetryCount += firstHalf.RetryCount + secondHalf.RetryCount;
+
+        return MergeSplitEnvelopes(batch, firstEnvelope, secondEnvelope);
+    }
+
+    /// <summary>
+    /// Shared, mutable call budget passed by reference through one document's recovery
+    /// recursion tree, so every batch's retries/splits draw from the same document-wide cap.
+    /// </summary>
+    private sealed class RecoveryBudget
+    {
+        public int RemainingCalls;
+    }
+
+    private static bool IsTranscriptionComplete(DocumentEnvelope envelope, BatchDescriptor batch)
+    {
+        var nonEmptyPages = envelope.Pages
+            .Where(p => !string.IsNullOrWhiteSpace(p.Markdown))
+            .Select(p => p.PageNumber)
+            .ToHashSet();
+
+        for (int pageNumber = batch.StartPage; pageNumber <= batch.EndPage; pageNumber++)
+        {
+            if (!nonEmptyPages.Contains(pageNumber))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static DocumentEnvelope MergeSplitEnvelopes(BatchDescriptor originalBatch, DocumentEnvelope first, DocumentEnvelope second)
+    {
+        var merged = new DocumentEnvelope
+        {
+            DocumentId = originalBatch.DocumentId,
+            JobId = originalBatch.JobId,
+            BatchId = originalBatch.BatchId,
+            SchemaVersion = Math.Max(first.SchemaVersion, second.SchemaVersion),
+            CreatedAt = DateTime.UtcNow
+        };
+
+        merged.Pages.AddRange(first.Pages);
+        merged.Pages.AddRange(second.Pages);
+        merged.Items.AddRange(first.Items);
+        merged.Items.AddRange(second.Items);
+        merged.Tables.AddRange(first.Tables);
+        merged.Tables.AddRange(second.Tables);
+
+        return merged;
     }
 }

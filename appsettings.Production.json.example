@@ -1,0 +1,26 @@
+{
+  "DefaultProvider": "Gemini",
+  "Gemini": {
+    "ApiKey": "YOUR_PRODUCTION_GEMINI_API_KEY",
+    "Model": "gemini-flash-lite-latest"
+  },
+  "OpenAI": {
+    "ApiKey": "YOUR_PRODUCTION_OPENAI_API_KEY",
+    "Model": "gpt-4o-mini"
+  },
+  "ConnectionStrings": {
+    "DocumentIntelligence": "Host=localhost;Port=5432;Database=pixous_doc_intelligence;Username=postgres;Password=YOUR_PRODUCTION_POSTGRES_PASSWORD"
+  },
+  "Storage": {
+    "Provider": "Postgres",
+    "OutputBaseDirectory": "output"
+  },
+  "PortalAuth": {
+    "GoogleClientId": "YOUR_PRODUCTION_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "JwtSigningKey": "REPLACE_WITH_A_SECURE_RANDOM_SECRET_AT_LEAST_32_CHARACTERS_LONG",
+    "JwtIssuer": "PixousDocIntelligence",
+    "JwtAudience": "PixousDocIntelligencePortal",
+    "JwtExpiryMinutes": 10080,
+    "AdminEmails": [ "admin@yourcompany.com" ]
+  }
+}

@@ -1,14 +1,86 @@
 @import "tailwindcss";
 
+@theme {
+  --color-navy: #17243b;
+  --color-navy-dark: #0f1829;
+  --color-app-bg: #f5f7fa;
+  --color-border-subtle: #dce5f0;
+}
+
 :root {
   color-scheme: light;
 }
 
 body {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-color: #f5f7fa;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 code, pre {
   font-family: ui-monospace, Consolas, monospace;
+}
+
+@keyframes blob-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(24px, -32px) scale(1.08); }
+  66% { transform: translate(-20px, 18px) scale(0.95); }
+}
+.animate-blob {
+  animation: blob-float 16s ease-in-out infinite;
+}
+
+@keyframes soft-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+.animate-soft-float {
+  animation: soft-float 5s ease-in-out infinite;
+}
+
+@keyframes gradient-pan {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.animate-gradient-pan {
+  background-size: 200% 200%;
+  animation: gradient-pan 8s ease infinite;
+}
+
+@keyframes shimmer-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+.animate-shimmer-sweep {
+  animation: shimmer-sweep 2.8s ease-in-out infinite;
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.reveal {
+  opacity: 0;
+}
+.reveal.is-visible {
+  animation: fade-in-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes dot-twinkle {
+  0%, 100% { opacity: 0.35; transform: scale(0.75); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.animate-dot-twinkle {
+  animation: dot-twinkle 2.6s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+@keyframes border-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.25); border-color: rgba(16, 185, 129, 0.25); }
+  50% { box-shadow: 0 0 10px 1px rgba(16, 185, 129, 0.25); border-color: rgba(16, 185, 129, 0.55); }
+}
+.animate-border-glow {
+  animation: border-glow 3s ease-in-out infinite;
 }

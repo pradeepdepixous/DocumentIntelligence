@@ -18,10 +18,8 @@ public interface IBatchScheduler
         string? sourceChecksum = null);
 
     /// <summary>
-    /// Slices and extracts a specific sub-range of pages from the PDF into standalone PDF bytes.
+    /// Opens the source PDF once so its page ranges can be sliced into batch bytes without
+    /// re-parsing the whole file for every batch.
     /// </summary>
-    Task<byte[]> ExtractBatchBytesAsync(
-        string originalPdfPath, 
-        BatchDescriptor batch, 
-        CancellationToken cancellationToken = default);
+    IPdfBatchSource OpenBatchSource(string originalPdfPath);
 }

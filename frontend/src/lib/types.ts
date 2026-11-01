@@ -21,7 +21,7 @@ export interface ClientCredential {
 
 // Self-serve permissions available to a customer-created key. "admin" is deliberately excluded —
 // only the allowlisted portal admin identity ever gets that role, and only on their own session.
-export const SELF_SERVE_PERMISSIONS = ["process", "summarize", "ask", "evaluate"] as const;
+export const SELF_SERVE_PERMISSIONS = ["process", "summarize", "ask", "evaluate", "generate"] as const;
 
 export interface PortalAccount {
   account_id: string;
@@ -37,9 +37,14 @@ export interface AuthSessionResponse {
 }
 
 export interface MyUsageResponse {
+  credit: {
+    credit_limit: number;
+    credits_used: number;
+    credits_remaining: number;
+    billing_cycle: string;
+  };
   total_keys: number;
   active_keys: number;
-  total_pages_used_this_cycle: number;
   total_requests: number;
   keys: Array<{
     client_id: string;
@@ -47,10 +52,7 @@ export interface MyUsageResponse {
     key_prefix: string;
     permissions: string[];
     is_active: boolean;
-    plan_tier: string;
-    monthly_page_quota: number;
     pages_used_this_month: number;
-    pages_remaining: number;
     total_requests: number;
     last_used_at: string | null;
   }>;
@@ -84,10 +86,20 @@ export interface AdminAccountSummary {
   is_admin: boolean;
   created_at: string;
   last_login_at: string | null;
+  credit_limit: number;
+  credits_used: number;
+  credits_remaining: number;
   total_keys: number;
   active_keys: number;
-  total_pages_used_this_cycle: number;
   total_requests: number;
+}
+
+export interface SetAccountCreditResponse {
+  message: string;
+  account_id: string;
+  credit_limit: number;
+  credits_used: number;
+  credits_remaining: number;
 }
 
 export interface AdminUsageResponse {

@@ -1,4 +1,4 @@
-using System.Text;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Domain.Planning;
@@ -7,26 +7,22 @@ using PixousDocIntelligence.Pipeline.Batching;
 namespace PixousDocIntelligence.Pipeline.Extraction;
 
 /// <summary>
-/// Phase 4 implementation: Executes Gemini 2.5 Flash on an individual PDF page batch
-/// adhering strictly to the job's versioned ExtractionPlan and emitting DocumentEnvelope items.
+/// Phase 4 implementation: Executes Gemini Flash on an individual PDF page batch
+/// using the configured IExtractionStrategy (schema-first or markdown-first).
 /// </summary>
 public class GeminiBatchExtractor : IGeminiBatchExtractor
 {
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
     private readonly string _modelName;
+    private readonly IExtractionStrategy? _strategy;
     private const string GeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models";
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true
-    };
 
     public GeminiBatchExtractor(
         string apiKey, 
         string modelName = "gemini-flash-lite-latest", 
-        HttpClient? httpClient = null)
+        HttpClient? httpClient = null,
+        IExtractionStrategy? strategy = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -35,7 +31,8 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
 
         _apiKey = apiKey.Trim();
         _modelName = Services.LLM.LLMClientFactory.NormalizeGeminiModel(modelName);
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _httpClient = httpClient ?? Common.FastHttpClientHelper.CreateClient(TimeSpan.FromMinutes(10));
+        _strategy = strategy;
     }
 
     /// <inheritdoc />
@@ -45,111 +42,72 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
         ExtractionPlan plan, 
         CancellationToken cancellationToken = default)
     {
-        string base64Data = Convert.ToBase64String(batchPdfBytes);
+        var activeStrategy = _strategy ?? ExtractionStrategyResolver.Resolve(plan);
+        var (systemInstruction, userPrompt) = activeStrategy.BuildPrompts(batchDescriptor, plan);
 
-        // Build dynamic instructions for layout-preserving verbatim Markdown transcription
-        string systemInstruction = 
-            $"You are an expert Document Intelligence and Markdown Reconstruction Engine (Gemini 2.5 Flash).\n" +
-            $"You are analyzing Batch {batchDescriptor.BatchId} of a larger document. " +
-            $"The batch covers original document pages {batchDescriptor.StartPage} through {batchDescriptor.EndPage}.\n\n" +
-            "CORE MISSION:\n" +
-            "1. Transcribe each page into structured GitHub Flavored Markdown (headings #, ##, bold text, bullet points, numbered lists).\n" +
-            "2. Preserve ALL tables using standard Markdown table syntax (| Header 1 | Header 2 |) with full cell fidelity.\n" +
-            "3. Extract high-level keywords/topics that summarize this batch.\n" +
-            "4. Provide a concise executive summary of the content in this batch.\n\n" +
-            "STRICT JSON OUTPUT FORMAT:\n" +
-            "{\n" +
-            "  \"batch_summary\": \"Concise summary of pages in this batch...\",\n" +
-            "  \"batch_keywords\": [\"keyword1\", \"keyword2\", \"keyword3\"],\n" +
-            "  \"pages\": [\n" +
-            "    {\n" +
-            $"      \"page_number\": {batchDescriptor.StartPage},\n" +
-            "      \"has_tables\": false,\n" +
-            "      \"markdown\": \"# Page Heading\\n\\nVerbatim page text in markdown format...\"\n" +
-            "    }\n" +
-            "  ],\n" +
-            "  \"items\": [],\n" +
-            "  \"tables\": []\n" +
-            "}\n\n" +
-            $"CRITICAL REQUIREMENT: For every single page from {batchDescriptor.StartPage} to {batchDescriptor.EndPage}, " +
-            "there MUST be a corresponding entry in the 'pages' array. Capture all text completely without skipping.";
-
-        string userPrompt =
-            $"Process pages {batchDescriptor.StartPage} through {batchDescriptor.EndPage}. " +
-            "Transcribe each page into structured markdown, extract key tables, keywords, and provide a batch summary. " +
-            "Output strictly conforming JSON.";
-
-        var requestPayload = new
-        {
-            systemInstruction = new
-            {
-                parts = new[] { new { text = systemInstruction } }
-            },
-            contents = new[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = new object[]
-                    {
-                        new
-                        {
-                            inlineData = new
-                            {
-                                mimeType = "application/pdf",
-                                data = base64Data
-                            }
-                        },
-                        new
-                        {
-                            text = userPrompt
-                        }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                responseMimeType = "application/json",
-                temperature = 0.1
-            }
-        };
+        // Written directly as UTF-8 JSON bytes via Utf8JsonWriter.WriteBase64String, which
+        // base64-encodes batchPdfBytes straight into the output buffer. This avoids allocating
+        // a separate base64 string and a separate serialized JSON string (each ~1.33x the PDF
+        // batch size) on top of the raw bytes, which otherwise peaks at ~4-5x the batch size
+        // for every extraction call.
+        byte[] requestBytes = BuildRequestPayload(systemInstruction, userPrompt, batchPdfBytes);
 
         string endpoint = $"{GeminiBaseUrl}/{_modelName}:generateContent?key={_apiKey}";
-        string requestJson = JsonSerializer.Serialize(requestPayload);
 
         // Execute with bounded exponential backoff
-        string responseJson = await ExecuteWithRetryAsync(endpoint, requestJson, cancellationToken);
+        string responseJson = await ExecuteWithRetryAsync(endpoint, requestBytes, cancellationToken);
         string extractedJson = ExtractCandidateText(responseJson);
 
-        return ParseEnvelope(extractedJson, batchDescriptor, plan);
+        return activeStrategy.ParseEnvelope(extractedJson, batchDescriptor, plan);
     }
 
-    private static string BuildFieldsSpecification(ExtractionPlan plan)
+    private static byte[] BuildRequestPayload(string systemInstruction, string userPrompt, byte[] pdfBytes)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"Target Document Type: {plan.TargetDocumentType}");
-        sb.AppendLine($"Extraction Mode: {plan.ExtractionMode}");
-        sb.AppendLine("Planned Fields:");
-
-        foreach (var field in plan.DesiredFields)
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
         {
-            sb.Append($"- {field.FieldKey} ({field.FieldLabel}) [{field.ValueType}]: {field.Description}");
-            if (field.Aliases.Count > 0)
-            {
-                sb.Append($" (Aliases: {string.Join(", ", field.Aliases)})");
-            }
-            sb.AppendLine();
+            writer.WriteStartObject();
+
+            writer.WriteStartObject("systemInstruction");
+            writer.WriteStartArray("parts");
+            writer.WriteStartObject();
+            writer.WriteString("text", systemInstruction);
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+
+            writer.WriteStartArray("contents");
+            writer.WriteStartObject();
+            writer.WriteString("role", "user");
+            writer.WriteStartArray("parts");
+
+            writer.WriteStartObject();
+            writer.WriteStartObject("inlineData");
+            writer.WriteString("mimeType", "application/pdf");
+            writer.WriteBase64String("data", pdfBytes);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+
+            writer.WriteStartObject();
+            writer.WriteString("text", userPrompt);
+            writer.WriteEndObject();
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+
+            writer.WriteStartObject("generationConfig");
+            writer.WriteString("responseMimeType", "application/json");
+            writer.WriteNumber("temperature", 0.1);
+            writer.WriteEndObject();
+
+            writer.WriteEndObject();
         }
 
-        if (plan.PreserveTables)
-        {
-            sb.AppendLine("Preserve all relevant tables with their row and column structure.");
-        }
-
-        return sb.ToString();
+        return stream.ToArray();
     }
 
-    private async Task<string> ExecuteWithRetryAsync(string endpoint, string requestJson, CancellationToken cancellationToken)
+    private async Task<string> ExecuteWithRetryAsync(string endpoint, byte[] requestBytes, CancellationToken cancellationToken)
     {
         int maxRetries = 4;
         int delayMs = 1500;
@@ -158,8 +116,9 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
-                Content = new StringContent(requestJson, Encoding.UTF8, "application/json")
+                Content = new ByteArrayContent(requestBytes)
             };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
             HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
             string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -190,121 +149,27 @@ public class GeminiBatchExtractor : IGeminiBatchExtractor
         throw new Exception("Exceeded retry attempts for batch extraction.");
     }
 
-    private static DocumentEnvelope ParseEnvelope(string rawJson, BatchDescriptor batch, ExtractionPlan plan)
+    private static string ExtractCandidateText(string responseJson)
     {
-        var envelope = new DocumentEnvelope
-        {
-            DocumentId = batch.DocumentId,
-            JobId = batch.JobId,
-            BatchId = batch.BatchId,
-            SchemaVersion = 2,
-            CreatedAt = DateTime.UtcNow
-        };
-
-        try
-        {
-            using var doc = JsonDocument.Parse(rawJson);
-            var root = doc.RootElement;
-
-            // 1. Parse per-page Markdown transcripts
-            var pages = EnvelopeJsonParsing.ParseMarkdownPages(root, batch);
-            envelope.Pages = pages;
-
-            // 2. Parse batch summary and keywords
-            string summary = EnvelopeJsonParsing.ParseBatchSummary(root);
-            var keywords = EnvelopeJsonParsing.ParseBatchKeywords(root);
-            envelope.DocumentSummary = summary;
-            envelope.DocumentKeywords = keywords;
-
-            envelope.Batches.Add(new BatchMarkdownResult
-            {
-                BatchId = batch.BatchId,
-                StartPage = batch.StartPage,
-                EndPage = batch.EndPage,
-                BatchSummary = summary,
-                BatchKeywords = keywords,
-                Pages = pages
-            });
-
-            // 3. Backward-compatible items & tables
-            if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var itemElem in itemsElement.EnumerateArray())
-                {
-                    string fieldKey = itemElem.TryGetProperty("field_key", out var fk) ? fk.GetString() ?? string.Empty : string.Empty;
-                    string fieldLabel = itemElem.TryGetProperty("field_label", out var fl) ? fl.GetString() ?? fieldKey : fieldKey;
-                    string valueType = itemElem.TryGetProperty("value_type", out var vt) ? vt.GetString() ?? "string" : "string";
-                    
-                    object? val = null;
-                    if (itemElem.TryGetProperty("value", out var vElem))
-                    {
-                        if (vElem.ValueKind == JsonValueKind.Null || vElem.ValueKind == JsonValueKind.Undefined)
-                        {
-                            continue;
-                        }
-                        val = vElem.Clone();
-                    }
-                    else
-                    {
-                        continue;
-                    }
-
-                    var sources = EnvelopeJsonParsing.ParseSources(itemElem, batch);
-
-                    double confidence = 0.90;
-                    if (itemElem.TryGetProperty("confidence", out var conf) &&
-                        conf.ValueKind == JsonValueKind.Number &&
-                        conf.TryGetDouble(out double c))
-                    {
-                        confidence = Math.Clamp(c, 0.0, 1.0);
-                    }
-
-                    envelope.Items.Add(new ExtractedItem
-                    {
-                        ItemType = "field",
-                        FieldKey = fieldKey,
-                        FieldLabel = fieldLabel,
-                        Value = val,
-                        ValueType = valueType,
-                        Sources = sources,
-                        Confidence = new ConfidenceSignal
-                        {
-                            Value = confidence,
-                            Source = "model_reported"
-                        },
-                        ValidationStatus = confidence >= 0.85 ? "valid" : "flagged"
-                    });
-                }
-            }
-
-            envelope.Tables.AddRange(EnvelopeJsonParsing.ParseTables(root, batch));
-        }
-        catch (Exception ex)
-        {
-            throw new JsonException($"Failed to parse Gemini batch envelope: {rawJson}", ex);
-        }
-
-        return envelope;
-    }
-
-    private static string ExtractCandidateText(string rawResponse)
-    {
-        using var doc = JsonDocument.Parse(rawResponse);
+        using var doc = JsonDocument.Parse(responseJson);
         var root = doc.RootElement;
 
         if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
         {
             var first = candidates[0];
-            if (first.TryGetProperty("content", out var content) &&
-                content.TryGetProperty("parts", out var parts) &&
+            if (first.TryGetProperty("content", out var content) && 
+                content.TryGetProperty("parts", out var parts) && 
                 parts.GetArrayLength() > 0)
             {
-                string text = parts[0].GetProperty("text").GetString() ?? string.Empty;
-                return CleanJsonFences(text);
+                var textPart = parts[0];
+                if (textPart.TryGetProperty("text", out var text))
+                {
+                    return CleanJsonFences(text.GetString() ?? string.Empty);
+                }
             }
         }
 
-        throw new Exception("Gemini batch response contained no text parts.");
+        throw new JsonException($"No valid candidate text parts found in Gemini response: {responseJson}");
     }
 
     private static string CleanJsonFences(string input)

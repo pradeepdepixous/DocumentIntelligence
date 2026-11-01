@@ -1,23 +1,36 @@
+import { useState } from "react";
+import AgentsGuide from "../components/AgentsGuide";
+import DocumentGenerationGuide from "../components/DocumentGenerationGuide";
+
+const TABS = [
+  { id: "guide", label: "Agent Guide" },
+  { id: "generation", label: "Document Generation" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
+
 export default function ApiDocs() {
+  const [tab, setTab] = useState<TabId>("guide");
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">API Documentation</h2>
-          <p className="text-sm text-gray-500">Full endpoint reference, generated from the API.</p>
-        </div>
-        <a
-          href="/swagger"
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-        >
-          Open in new tab
-        </a>
+    <div className="space-y-5">
+      <div className="inline-flex gap-1 rounded-xl border border-border-subtle bg-white p-1 shadow-sm">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`relative rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              tab === t.id ? "bg-navy text-white shadow-sm" : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-        <iframe src="/swagger" title="API Documentation" className="h-[80vh] w-full" />
-      </div>
+
+      {tab === "guide" && <AgentsGuide />}
+
+      {tab === "generation" && <DocumentGenerationGuide />}
     </div>
   );
 }

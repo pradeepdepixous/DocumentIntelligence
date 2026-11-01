@@ -19,7 +19,7 @@ public class MyCredentialsController : ControllerBase
     // Self-serve keys may never be granted "admin" — only the allowlisted portal admin identity gets that.
     private static readonly HashSet<string> AllowedSelfServePermissions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "process", "summarize", "ask", "evaluate"
+        "process", "summarize", "ask", "evaluate", "generate"
     };
 
     private readonly ICredentialRegistry _credentialRegistry;

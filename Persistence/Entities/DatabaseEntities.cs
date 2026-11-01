@@ -66,6 +66,12 @@ public class ExtractionJobEntity
     [Column("error_message")]
     public string? ErrorMessage { get; set; }
 
+    [Column("attempt_count")]
+    public int AttemptCount { get; set; } = 0;
+
+    [Column("next_attempt_at")]
+    public DateTime? NextAttemptAt { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -270,5 +276,18 @@ public class CustomerAccountEntity
 
     [Column("last_login_at")]
     public DateTime? LastLoginAt { get; set; }
+
+    /// <summary>
+    /// Page-processing credit pool for this account, shared by every self-serve API key it owns
+    /// AND by testing directly in the Playground via the portal session — one limit, spent either way.
+    /// </summary>
+    [Column("credit_limit")]
+    public int CreditLimit { get; set; }
+
+    [Column("credits_used")]
+    public int CreditsUsed { get; set; }
+
+    [Column("billing_cycle")]
+    public string BillingCycle { get; set; } = DateTime.UtcNow.ToString("yyyy-MM");
 }
 

@@ -4,10 +4,17 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    outDir: '../wwwroot',
+    emptyOutDir: true,
+  },
   server: {
-    port: 5173,
+    port: 5174,
     proxy: {
-      '/api': {
+      // Trailing slash matters: a bare '/api' prefix-matches the client route '/api-access' too,
+      // silently proxying that page request to the backend (which 404s) instead of letting React
+      // Router handle it.
+      '/api/': {
         target: 'http://localhost:5000',
         changeOrigin: true,
       },

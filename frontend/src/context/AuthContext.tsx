@@ -1,5 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, apiFetch, clearSession, getPortalToken, setPortalToken } from "../lib/apiClient";
+import {
+  ApiError,
+  apiFetch,
+  clearSession,
+  getPortalToken,
+  setPortalToken,
+  SESSION_EXPIRED_EVENT,
+} from "../lib/apiClient";
 import type { AuthSessionResponse, PortalAccount } from "../lib/types";
 
 interface AuthState {
@@ -89,6 +96,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSession();
     localStorage.removeItem(ACCOUNT_STORAGE_KEY);
     setAccount(null);
+  }, []);
+
+  // A 401 from any portal-token-authenticated route (expired/revoked session) clears state here
+  // so ProtectedRoute's isAuthenticated check flips and redirects to /login, instead of every
+  // subsequent call just failing silently with no visible recovery.
+  useEffect(() => {
+    function handleSessionExpired() {
+      clearSession();
+      localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+      setAccount(null);
+      setError("Your session expired. Please sign in again.");
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
   return (

@@ -78,6 +78,14 @@ public class PageCoverage
 
     [JsonPropertyName("table_count")]
     public int TableCount { get; set; }
+
+    /// <summary>
+    /// Whether a non-trivial markdown transcript came back for this page — the primary coverage
+    /// signal under the markdown-first extraction design, where Items/Tables are expected to be
+    /// empty by design and so can no longer be used alone to tell "page covered" from "page missed".
+    /// </summary>
+    [JsonPropertyName("has_markdown_content")]
+    public bool HasMarkdownContent { get; set; }
 }
 
 /// <summary>

@@ -56,6 +56,24 @@ public class InMemoryDocumentProcessingRepository : IDocumentProcessingRepositor
         return Task.CompletedTask;
     }
 
+    public Task MarkJobRetryScheduledAsync(
+        string jobId,
+        int attemptCount,
+        DateTime nextAttemptAt,
+        string lastError,
+        CancellationToken cancellationToken = default)
+    {
+        if (_jobs.TryGetValue(jobId, out var job))
+        {
+            job.Status = "RetryWait";
+            job.AttemptCount = attemptCount;
+            job.NextAttemptAt = nextAttemptAt;
+            job.ErrorMessage = lastError;
+            job.UpdatedAt = DateTime.UtcNow;
+        }
+        return Task.CompletedTask;
+    }
+
     public Task SaveBatchManifestAsync(BatchManifest manifest, CancellationToken cancellationToken = default)
     {
         _manifests[manifest.JobId] = manifest;
@@ -129,6 +147,20 @@ public class InMemoryDocumentProcessingRepository : IDocumentProcessingRepositor
     {
         _reviewTasks.TryGetValue(jobId, out var tasks);
         return Task.FromResult(tasks);
+    }
+
+    private readonly ConcurrentDictionary<string, PixousDocIntelligence.Application.Models.DocumentProcessingResult> _results = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task SaveProcessingResultAsync(string jobId, PixousDocIntelligence.Application.Models.DocumentProcessingResult result, CancellationToken cancellationToken = default)
+    {
+        _results[jobId] = result;
+        return Task.CompletedTask;
+    }
+
+    public Task<PixousDocIntelligence.Application.Models.DocumentProcessingResult?> GetProcessingResultAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        _results.TryGetValue(jobId, out var result);
+        return Task.FromResult(result);
     }
 
     public string GetJobDirectory(string jobId) => string.Empty;

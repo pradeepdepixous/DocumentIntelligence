@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Pipeline.Batching;
@@ -5,9 +6,8 @@ using PixousDocIntelligence.Pipeline.Batching;
 namespace PixousDocIntelligence.Pipeline.Extraction;
 
 /// <summary>
-/// Shared JSON parsing for the per-item "sources" array and the top-level "tables" array,
-/// used by both the Gemini and OpenAI batch extractors so evidence and tables are handled
-/// identically regardless of which model produced the response.
+/// Shared JSON parsing for batch extractor responses: structured fields, source evidence citations,
+/// tables, per-page transcripts, batch summary, and keywords. Used by Gemini and OpenAI batch extractors.
 /// </summary>
 internal static class EnvelopeJsonParsing
 {
@@ -37,14 +37,21 @@ internal static class EnvelopeJsonParsing
                 {
                     sourceText = st.GetString() ?? string.Empty;
                 }
+                else if (srcElem.TryGetProperty("evidence", out var ev) && ev.ValueKind == JsonValueKind.String)
+                {
+                    sourceText = ev.GetString() ?? string.Empty;
+                }
 
-                sources.Add(new SourceEvidence { PageNumber = pageNum, SourceText = sourceText });
+                if (!string.IsNullOrWhiteSpace(sourceText))
+                {
+                    sources.Add(new SourceEvidence { PageNumber = pageNum, SourceText = sourceText.Trim() });
+                }
             }
         }
 
         if (sources.Count == 0)
         {
-            // Legacy fallback: model emitted a single page_number/source_text pair at the item level.
+            // Fallback: model emitted a single page_number/source_text or page/evidence pair at the item level.
             int pageNum = batch.StartPage;
             if (itemElem.TryGetProperty("page_number", out var pn) &&
                 pn.ValueKind == JsonValueKind.Number &&
@@ -52,17 +59,103 @@ internal static class EnvelopeJsonParsing
             {
                 pageNum = Math.Clamp(p, batch.StartPage, batch.EndPage);
             }
+            else if (itemElem.TryGetProperty("page", out var pProp) &&
+                     pProp.ValueKind == JsonValueKind.Number &&
+                     pProp.TryGetInt32(out int pVal))
+            {
+                pageNum = Math.Clamp(pVal, batch.StartPage, batch.EndPage);
+            }
 
             string sourceText = string.Empty;
             if (itemElem.TryGetProperty("source_text", out var st) && st.ValueKind == JsonValueKind.String)
             {
                 sourceText = st.GetString() ?? string.Empty;
             }
+            else if (itemElem.TryGetProperty("evidence", out var ev) && ev.ValueKind == JsonValueKind.String)
+            {
+                sourceText = ev.GetString() ?? string.Empty;
+            }
 
-            sources.Add(new SourceEvidence { PageNumber = pageNum, SourceText = sourceText });
+            if (!string.IsNullOrWhiteSpace(sourceText))
+            {
+                sources.Add(new SourceEvidence { PageNumber = pageNum, SourceText = sourceText.Trim() });
+            }
         }
 
         return sources;
+    }
+
+    /// <summary>
+    /// Parses the top-level "items" array into ExtractedItem entries with types, confidence, and source citations.
+    /// </summary>
+    public static List<ExtractedItem> ParseItems(JsonElement root, BatchDescriptor batch)
+    {
+        var items = new List<ExtractedItem>();
+
+        if (!root.TryGetProperty("items", out var itemsElement) || itemsElement.ValueKind != JsonValueKind.Array)
+        {
+            // Also check alternate property "candidates"
+            if (!root.TryGetProperty("candidates", out itemsElement) || itemsElement.ValueKind != JsonValueKind.Array)
+            {
+                return items;
+            }
+        }
+
+        foreach (var itemElem in itemsElement.EnumerateArray())
+        {
+            string fieldKey = string.Empty;
+            if (itemElem.TryGetProperty("field_key", out var fk))
+                fieldKey = fk.GetString() ?? string.Empty;
+            else if (itemElem.TryGetProperty("field", out var f))
+                fieldKey = f.GetString() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(fieldKey)) continue;
+
+            string fieldLabel = itemElem.TryGetProperty("field_label", out var fl) ? fl.GetString() ?? fieldKey : fieldKey;
+            string valueType = itemElem.TryGetProperty("value_type", out var vt) ? vt.GetString() ?? "string" : "string";
+
+            object? val = null;
+            if (itemElem.TryGetProperty("value", out var vElem))
+            {
+                if (vElem.ValueKind == JsonValueKind.Null || vElem.ValueKind == JsonValueKind.Undefined)
+                {
+                    continue; // Skip null/undefined values
+                }
+                val = vElem.Clone();
+            }
+            else
+            {
+                continue;
+            }
+
+            var sources = ParseSources(itemElem, batch);
+
+            double confidence = 0.90;
+            if (itemElem.TryGetProperty("confidence", out var conf) &&
+                conf.ValueKind == JsonValueKind.Number &&
+                conf.TryGetDouble(out double c))
+            {
+                confidence = Math.Clamp(c, 0.0, 1.0);
+            }
+
+            items.Add(new ExtractedItem
+            {
+                ItemType = "field",
+                FieldKey = fieldKey,
+                FieldLabel = fieldLabel,
+                Value = val,
+                ValueType = valueType,
+                Sources = sources,
+                Confidence = new ConfidenceSignal
+                {
+                    Value = confidence,
+                    Source = "model_reported"
+                },
+                ValidationStatus = confidence >= 0.85 ? "valid" : "flagged"
+            });
+        }
+
+        return items;
     }
 
     /// <summary>
@@ -150,24 +243,40 @@ internal static class EnvelopeJsonParsing
     /// </summary>
     public static List<PageMarkdownContent> ParseMarkdownPages(JsonElement root, BatchDescriptor batch)
     {
-        var pages = new List<PageMarkdownContent>();
+        var pagesByNumber = new Dictionary<int, PageMarkdownContent>();
 
         if (root.TryGetProperty("pages", out var pagesElem) && pagesElem.ValueKind == JsonValueKind.Array)
         {
             foreach (var pElem in pagesElem.EnumerateArray())
             {
-                int pageNum = batch.StartPage;
-                if (pElem.TryGetProperty("page_number", out var pn) &&
-                    pn.ValueKind == JsonValueKind.Number &&
-                    pn.TryGetInt32(out int p))
+                if (!pElem.TryGetProperty("page_number", out var pn) ||
+                    pn.ValueKind != JsonValueKind.Number ||
+                    !pn.TryGetInt32(out int pageNum))
                 {
-                    pageNum = Math.Clamp(p, batch.StartPage, batch.EndPage);
+                    // No usable page number — there's nothing safe to attribute this content to.
+                    continue;
+                }
+
+                if (pageNum < batch.StartPage || pageNum > batch.EndPage)
+                {
+                    // The model reported a page number outside this batch's actual range.
+                    // Clamping it to the nearest boundary page would silently attribute the
+                    // wrong content to a real page (and could win over correct content during
+                    // stitching, which keeps whichever transcript is longer). Drop it instead —
+                    // the true page then shows up as missing and gets retried/flagged like any
+                    // other incomplete page.
+                    continue;
                 }
 
                 string md = string.Empty;
                 if (pElem.TryGetProperty("markdown", out var m) && m.ValueKind == JsonValueKind.String)
                 {
                     md = m.GetString() ?? string.Empty;
+                }
+
+                if (string.IsNullOrWhiteSpace(md))
+                {
+                    continue;
                 }
 
                 bool hasTables = false;
@@ -181,19 +290,23 @@ internal static class EnvelopeJsonParsing
                     hasTables = true;
                 }
 
-                if (!string.IsNullOrWhiteSpace(md))
+                var page = new PageMarkdownContent
                 {
-                    pages.Add(new PageMarkdownContent
-                    {
-                        PageNumber = pageNum,
-                        Markdown = md.Trim(),
-                        HasTables = hasTables
-                    });
+                    PageNumber = pageNum,
+                    Markdown = md.Trim(),
+                    HasTables = hasTables
+                };
+
+                // The model can emit the same page number twice in one response; keep whichever
+                // transcript is more complete instead of silently taking the last one.
+                if (!pagesByNumber.TryGetValue(pageNum, out var existing) || page.Markdown.Length > existing.Markdown.Length)
+                {
+                    pagesByNumber[pageNum] = page;
                 }
             }
         }
 
-        return pages;
+        return pagesByNumber.Values.OrderBy(p => p.PageNumber).ToList();
     }
 
     /// <summary>
@@ -243,4 +356,3 @@ internal static class EnvelopeJsonParsing
         return keywords;
     }
 }
-

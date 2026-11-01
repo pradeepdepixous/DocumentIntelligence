@@ -9,6 +9,7 @@ using PixousDocIntelligence.Application.Options;
 using PixousDocIntelligence.Domain.Contracts;
 using PixousDocIntelligence.Models;
 using PixousDocIntelligence.Persistence.Repositories;
+using PixousDocIntelligence.Security;
 using PixousDocIntelligence.Services.LLM;
 
 namespace PixousDocIntelligence.Controllers;
@@ -16,11 +17,13 @@ namespace PixousDocIntelligence.Controllers;
 /// <summary>
 /// Endpoints for interacting with the Grounded Document Analyst Agent (Route B - Lightweight).
 /// Answers and summaries are strictly bound to verified document extractions with page citations.
+/// Accepts either an API key or a signed-in portal session (see <see cref="PortalAuthSchemes.Combined"/>)
+/// so the Playground can exercise these directly, with no API key required.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
-[Authorize]
+[Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined)]
 public class AgentController : ControllerBase
 {
     private readonly IDocumentProcessingRepository _repository;
@@ -42,7 +45,7 @@ public class AgentController : ControllerBase
     /// <param name="request">Optional focus angle, provider ('Gemini' or 'OpenAI'), model, and API key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     [HttpPost("jobs/{jobId}/summarize")]
-    [Authorize(Roles = "summarize,admin")]
+    [Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined, Roles = "summarize,admin")]
     [ProducesResponseType(typeof(AgentSummarizeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Summarize(
@@ -102,7 +105,7 @@ public class AgentController : ControllerBase
     /// <param name="request">The question to answer, plus optional provider ('Gemini' or 'OpenAI'), model, and API key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     [HttpPost("jobs/{jobId}/ask")]
-    [Authorize(Roles = "ask,admin")]
+    [Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined, Roles = "ask,admin")]
     [ProducesResponseType(typeof(QnAResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -161,7 +164,7 @@ public class AgentController : ControllerBase
     /// <param name="request">Checklist of rules, categories, max marks, knockout flags, and optional provider/apiKey.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     [HttpPost("jobs/{jobId}/validate-rules")]
-    [Authorize(Roles = "evaluate,admin")]
+    [Authorize(AuthenticationSchemes = PortalAuthSchemes.Combined, Roles = "evaluate,admin")]
     [ProducesResponseType(typeof(RuleValidationResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
