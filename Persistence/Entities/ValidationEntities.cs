@@ -69,6 +69,9 @@ public class ValidationResultEntity
     [Column("checks_json", TypeName = "jsonb")]
     public string ChecksJson { get; set; } = "[]";
 
+    [Column("extracted_content_json", TypeName = "jsonb")]
+    public string? ExtractedContentJson { get; set; }
+
     [Column("message")]
     public string Message { get; set; } = string.Empty;
 

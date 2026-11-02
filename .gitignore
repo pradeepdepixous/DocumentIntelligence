@@ -28,3 +28,9 @@ Desktop.ini
 
 # Removed feature backups (kept locally, not committed)
 *.zip
+
+# Local scratch, test scripts, and temporary verification files
+scratch/
+scripts/test*
+*.log
+

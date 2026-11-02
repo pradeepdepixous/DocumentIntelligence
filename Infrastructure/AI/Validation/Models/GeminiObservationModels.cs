@@ -16,6 +16,12 @@ public class GeminiDocumentObservation
 
     [JsonPropertyName("observations")]
     public List<GeminiRequirementObservation> Observations { get; set; } = new();
+
+    /// <summary>
+    /// Automatic extraction of all key entity fields (key-value pairs) observed from the document.
+    /// </summary>
+    [JsonPropertyName("extractedContent")]
+    public Dictionary<string, object>? ExtractedContent { get; set; }
 }
 
 public class GeminiRequirementObservation

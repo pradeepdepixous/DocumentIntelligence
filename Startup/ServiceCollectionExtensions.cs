@@ -240,7 +240,9 @@ public static class ServiceCollectionExtensions
         ProcessingOptions processingOptions,
         IConfiguration configuration)
     {
-        string? postgresConnection = configuration.GetConnectionString("Postgres");
+        string? postgresConnection = configuration.GetConnectionString("DocumentIntelligence")
+            ?? configuration.GetConnectionString("Postgres")
+            ?? Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING");
         string storageProvider = processingOptions.Storage.Provider;
         if (storageProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(postgresConnection))
         {
@@ -350,12 +352,30 @@ public static class ServiceCollectionExtensions
             options.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
             {
                 Description = "Pixous Document Intelligence Project Access Key.\n\n" +
-                              "Enter your consuming project's access key below (e.g. 'pixous_admin_sec_live_994a821e90b7c4d123456789' or 'pixous_inv_sec_live_38a0bc412f91d8e476210984').\n\n" +
+                              "Enter your consuming project access key below (e.g. 'pixous_inv_sec_live_38a0bc412f91d8e476210984').\n\n" +
                               "Header: X-Document-Api-Key",
                 Name = "X-Document-Api-Key",
                 In = ParameterLocation.Header,
                 Type = SecuritySchemeType.ApiKey,
                 Scheme = "ApiKey"
+            });
+
+            options.AddSecurityDefinition("LlmApiKey", new OpenApiSecurityScheme
+            {
+                Description = "Bring Your Own Key (BYOK): Optional personal Google Gemini or OpenAI API key.\n\n" +
+                              "Header: X-LLM-ApiKey",
+                Name = "X-LLM-ApiKey",
+                In = ParameterLocation.Header,
+                Type = SecuritySchemeType.ApiKey
+            });
+
+            options.AddSecurityDefinition("LlmModel", new OpenApiSecurityScheme
+            {
+                Description = "Optional BYOK Model (e.g. 'gemini-flash-lite-latest', 'gemini-2.5-flash').\n\n" +
+                              "Header: X-LLM-Model",
+                Name = "X-LLM-Model",
+                In = ParameterLocation.Header,
+                Type = SecuritySchemeType.ApiKey
             });
 
             options.AddSecurityRequirement(new OpenApiSecurityRequirement
@@ -367,6 +387,28 @@ public static class ServiceCollectionExtensions
                         {
                             Type = ReferenceType.SecurityScheme,
                             Id = "ApiKey"
+                        }
+                    },
+                    Array.Empty<string>()
+                },
+                {
+                    new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference
+                        {
+                            Type = ReferenceType.SecurityScheme,
+                            Id = "LlmApiKey"
+                        }
+                    },
+                    Array.Empty<string>()
+                },
+                {
+                    new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference
+                        {
+                            Type = ReferenceType.SecurityScheme,
+                            Id = "LlmModel"
                         }
                     },
                     Array.Empty<string>()

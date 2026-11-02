@@ -156,6 +156,7 @@ public class ValidationOrchestrator : IValidationOrchestrator
             Status = status,
             IsValid = isValid,
             Checks = checks,
+            ExtractedContent = observations.ExtractedContent,
             Message = message,
             ValidatedAtUtc = DateTime.UtcNow
         };

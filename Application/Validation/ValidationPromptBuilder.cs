@@ -25,7 +25,8 @@ public class ValidationPromptBuilder
         systemSb.AppendLine("5. For each requirement, quote the exact textual evidence or describe the visible graphic evidence (e.g., 'Emblem visible in header').");
         systemSb.AppendLine("6. You must return an observation for EVERY requirement ID requested.");
         systemSb.AppendLine("7. Provide a realistic confidence score (0.0 to 1.0) reflecting legibility and certainty.");
-        systemSb.AppendLine("8. IMPORTANT: You only report observations and evidence. You do NOT make approval decisions.");
+        systemSb.AppendLine("8. EXTRACTED CONTENT: In addition to requirement observations, extract all key factual entity fields (e.g., names, numbers, identifiers, dates, addresses, authorities, values) present on the document as a clean key-value dictionary in 'extractedContent' with snake_case keys.");
+        systemSb.AppendLine("9. IMPORTANT: You only report observations and evidence. You do NOT make approval decisions.");
 
         var userSb = new StringBuilder();
         userSb.AppendLine($"EXPECTED DOCUMENT TYPE: {expectedDocumentType}");
@@ -54,7 +55,10 @@ public class ValidationPromptBuilder
       ""evidence"": ""string (exact quote or visual description)"",
       ""confidence"": 0.95
     }
-  ]
+  ],
+  ""extractedContent"": {
+    ""field_name"": ""extracted_value""
+  }
 }");
 
         return (systemSb.ToString(), userSb.ToString());

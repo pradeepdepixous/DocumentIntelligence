@@ -126,6 +126,9 @@ public class ValidationProfileService : IValidationProfileService
             Status = response.Status,
             IsValid = response.IsValid,
             ChecksJson = JsonSerializer.Serialize(response.Checks, JsonOptions),
+            ExtractedContentJson = response.ExtractedContent != null 
+                ? JsonSerializer.Serialize(response.ExtractedContent, JsonOptions) 
+                : null,
             Message = response.Message,
             ValidatedAt = response.ValidatedAtUtc
         };

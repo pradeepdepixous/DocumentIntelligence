@@ -84,9 +84,11 @@ public static class DatabaseInitializer
                     status TEXT NOT NULL,
                     is_valid BOOLEAN NULL,
                     checks_json JSONB NOT NULL DEFAULT '[]',
+                    extracted_content_json JSONB NULL,
                     message TEXT NOT NULL DEFAULT '',
                     validated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
+                ALTER TABLE validation_results ADD COLUMN IF NOT EXISTS extracted_content_json JSONB NULL;
                 CREATE INDEX IF NOT EXISTS ix_validation_results_tenant_val ON validation_results (tenant_id, validation_id);
                 CREATE INDEX IF NOT EXISTS ix_validation_results_profile ON validation_results (profile_id);
             ");

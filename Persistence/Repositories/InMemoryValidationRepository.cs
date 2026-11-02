@@ -16,19 +16,13 @@ public class InMemoryValidationRepository : IValidationRepository
             return Task.FromResult<ValidationProfileEntity?>(profile);
         }
 
-        string defaultKey = $"default-tenant:{profileId}";
-        if (_profiles.TryGetValue(defaultKey, out var defaultProfile))
-        {
-            return Task.FromResult<ValidationProfileEntity?>(defaultProfile);
-        }
-
         return Task.FromResult<ValidationProfileEntity?>(null);
     }
 
     public Task<List<ValidationProfileEntity>> ListProfilesAsync(string tenantId, CancellationToken cancellationToken = default)
     {
         var list = _profiles.Values
-            .Where(p => p.TenantId == tenantId || p.TenantId == "default-tenant")
+            .Where(p => p.TenantId == tenantId)
             .OrderByDescending(p => p.UpdatedAt)
             .ToList();
 
@@ -55,12 +49,6 @@ public class InMemoryValidationRepository : IValidationRepository
         if (_results.TryGetValue(key, out var res))
         {
             return Task.FromResult<ValidationResultEntity?>(res);
-        }
-
-        string defaultKey = $"default-tenant:{validationId}";
-        if (_results.TryGetValue(defaultKey, out var defRes))
-        {
-            return Task.FromResult<ValidationResultEntity?>(defRes);
         }
 
         return Task.FromResult<ValidationResultEntity?>(null);

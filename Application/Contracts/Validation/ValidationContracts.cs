@@ -81,6 +81,9 @@ public class ValidationResponse
     [JsonPropertyName("checks")]
     public List<RequirementCheckResult> Checks { get; set; } = new();
 
+    [JsonPropertyName("extractedContent")]
+    public Dictionary<string, object>? ExtractedContent { get; set; }
+
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 

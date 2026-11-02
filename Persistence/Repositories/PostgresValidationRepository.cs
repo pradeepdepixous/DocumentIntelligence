@@ -23,9 +23,10 @@ public class PostgresValidationRepository : IValidationRepository
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<DocumentIntelligenceDbContext>();
 
+        // Strict tenant isolation: a tenant can only load their own profiles
         return await db.ValidationProfiles
             .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.ProfileId == profileId && (p.TenantId == tenantId || p.TenantId == "default-tenant"), cancellationToken);
+            .FirstOrDefaultAsync(p => p.ProfileId == profileId && p.TenantId == tenantId, cancellationToken);
     }
 
     public async Task<List<ValidationProfileEntity>> ListProfilesAsync(string tenantId, CancellationToken cancellationToken = default)
@@ -33,9 +34,10 @@ public class PostgresValidationRepository : IValidationRepository
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<DocumentIntelligenceDbContext>();
 
+        // Strict tenant isolation: a tenant can only list their own profiles
         return await db.ValidationProfiles
             .AsNoTracking()
-            .Where(p => p.TenantId == tenantId || p.TenantId == "default-tenant")
+            .Where(p => p.TenantId == tenantId)
             .OrderByDescending(p => p.UpdatedAt)
             .ToListAsync(cancellationToken);
     }
@@ -83,7 +85,7 @@ public class PostgresValidationRepository : IValidationRepository
 
         return await db.ValidationResults
             .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.ValidationId == validationId && (r.TenantId == tenantId || r.TenantId == "default-tenant"), cancellationToken);
+            .FirstOrDefaultAsync(r => r.ValidationId == validationId && r.TenantId == tenantId, cancellationToken);
     }
 }
 
